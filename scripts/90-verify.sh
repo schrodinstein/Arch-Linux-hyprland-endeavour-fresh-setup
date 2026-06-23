@@ -10,10 +10,13 @@ checks=(
   fastfetch
   zeditor
   codex
+  nmcli
+  openvpn
   rustmon
   plexamp
   syncthing
   tailscale
+  vpn-unlimited-import-ovpn
   cyber-rain
   rxpipes
   tarts
@@ -22,15 +25,23 @@ checks=(
   inperiod
 )
 
-if [[ "${ARCH_SETUP_SKIP_VPN_UNLIMITED:-0}" != "1" ]]; then
-  checks+=(vpn-unlimited)
-fi
-
 for cmd in "${checks[@]}"; do
   if command -v "$cmd" >/dev/null 2>&1; then
     log "ok: $cmd -> $(command -v "$cmd")"
   else
     warn "missing: $cmd"
+  fi
+done
+
+package_checks=(
+  networkmanager-openvpn
+)
+
+for package in "${package_checks[@]}"; do
+  if pacman -Q "$package" >/dev/null 2>&1; then
+    log "ok: package installed: $package"
+  else
+    warn "missing package: $package"
   fi
 done
 

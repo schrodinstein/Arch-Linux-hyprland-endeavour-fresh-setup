@@ -20,6 +20,9 @@ fzf
 nodejs
 npm
 openai-codex
+networkmanager
+networkmanager-openvpn
+openvpn
 ripgrep
 rust
 llvm

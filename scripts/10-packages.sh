@@ -33,16 +33,6 @@ ensure_yay() {
 install_aur_packages() {
   local file="$ARCH_SETUP_ROOT/config/packages/aur.txt"
   mapfile -t packages < <(strip_package_file "$file")
-  if [[ "${ARCH_SETUP_SKIP_VPN_UNLIMITED:-0}" == "1" ]]; then
-    local filtered=()
-    local package
-    for package in "${packages[@]}"; do
-      [[ "$package" == "vpn-unlimited-bin" ]] && continue
-      filtered+=("$package")
-    done
-    packages=("${filtered[@]}")
-  fi
-
   if (( ${#packages[@]} == 0 )); then
     warn "no AUR packages listed"
     return 0
