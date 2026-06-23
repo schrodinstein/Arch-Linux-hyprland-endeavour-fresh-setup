@@ -22,8 +22,18 @@ node_modules/
 dist/
 build/
 pkg/
+src/
 *.AppImage
 *.pkg.tar.zst
+*.tar
+*.tar.*
+*.jar
+*.exe
+*.msi
+*.deb
+*.zip
+*.tgz
+*.sig
 
 # Runtime/cache output
 tmp/

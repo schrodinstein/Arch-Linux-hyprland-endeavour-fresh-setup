@@ -25,7 +25,7 @@ For a fork or private copy, override the clone URL:
 
 ```bash
 ARCH_SETUP_REPO_URL=https://github.com/YOUR_USER/YOUR_REPO.git \
-bash <(curl -fsSL https://raw.githubusercontent.com/schrodinstein/Arch-Linux-hyprland-endeavour-fresh-setup/main/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/bootstrap.sh)
 ```
 
 For an already cloned checkout:
@@ -154,3 +154,7 @@ Use `--interactive` if a specific installer needs MojoSetup's terminal UI.
 bash -n scripts/*.sh scripts/lib/*.sh
 ./scripts/90-verify.sh
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
