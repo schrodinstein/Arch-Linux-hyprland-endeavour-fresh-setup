@@ -23,6 +23,8 @@ openai-codex
 ripgrep
 rust
 llvm
+syncthing
+tailscale
 zed
 
 # Hyprland/ML4W desktop pieces and user apps

@@ -12,6 +12,8 @@ checks=(
   codex
   rustmon
   plexamp
+  syncthing
+  tailscale
   cyber-rain
   rxpipes
   tarts
@@ -19,6 +21,10 @@ checks=(
   ml4w-wallhaven-wallpaper
   inperiod
 )
+
+if [[ "${ARCH_SETUP_SKIP_VPN_UNLIMITED:-0}" != "1" ]]; then
+  checks+=(vpn-unlimited)
+fi
 
 for cmd in "${checks[@]}"; do
   if command -v "$cmd" >/dev/null 2>&1; then

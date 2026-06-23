@@ -5,7 +5,7 @@ Single-command bootstrap for a fresh EndeavourOS or Arch-like ML4W/Hyprland work
 Repository description:
 
 ```text
-Opinionated EndeavourOS/ML4W Hyprland bootstrap with Kitty, Fastfetch/Rustmon, Plexamp, Zed/Codex, Wallhaven wallpaper rotation, Inperiod, and terminal toys.
+Opinionated EndeavourOS/ML4W Hyprland bootstrap with Kitty, Fastfetch/Rustmon, Plexamp, VPN tools, Syncthing, Zed/Codex, Wallhaven wallpaper rotation, Inperiod, and terminal toys.
 ```
 
 ## Target System
@@ -36,8 +36,9 @@ For an already cloned checkout:
 
 ## What It Does
 
-- Installs base tooling, Hyprland/ML4W prerequisites, Kitty, Fastfetch, Zed, Codex, Rust, Node, desktop portals, audio pieces, and native WebKit desktop app dependencies.
-- Installs AUR apps currently tracked here: `rustmon-git` and `plexamp-bin`.
+- Installs base tooling, Hyprland/ML4W prerequisites, Kitty, Fastfetch, Zed, Codex, Rust, Node, Syncthing, Tailscale, desktop portals, audio pieces, and native WebKit desktop app dependencies.
+- Installs AUR apps currently tracked here: `rustmon-git`, `plexamp-bin`, and `vpn-unlimited-bin`.
+- Enables `tailscaled.service`, `vpn-unlimited-daemon.service`, and the per-user `syncthing.service` when systemd is available.
 - Installs Cargo terminal toys: `cyber-rain`, `rxpipes`, and `tarts` (`tarts donut`).
 - Installs `mhfan/inperiod` as a native standalone periodic table app.
 - Installs Wallhaven downloader support and fetches a fresh picker-compatible wallpaper every 20 minutes from `~/wallhaven-search-terms`.
@@ -75,6 +76,10 @@ ARCH_SETUP_ML4W_CHANNEL=stable   # stable or rolling
 ARCH_SETUP_SKIP_ML4W=1           # skip ML4W upstream installer
 ARCH_SETUP_TEMP_SUDO=0           # do not create temporary NOPASSWD sudo rule
 ARCH_SETUP_WALLHAVEN_TIMER=0     # install Wallhaven support but do not enable the 20-minute user timer
+ARCH_SETUP_SKIP_VPN_UNLIMITED=1  # skip VPN Unlimited's AUR package if avoiding a large Qt5 WebEngine build
+ARCH_SETUP_TAILSCALE_SERVICE=0   # install Tailscale but do not enable tailscaled.service
+ARCH_SETUP_VPN_UNLIMITED_SERVICE=0 # install VPN Unlimited but do not enable its daemon
+ARCH_SETUP_SYNCTHING_SERVICE=0   # install Syncthing but do not enable the user service
 ARCH_SETUP_INPERIOD_REF=v0.1.6   # optional git ref/tag/branch for mhfan/inperiod
 ARCH_SETUP_DIR=$HOME/.local/src/arch-setup
 ```
@@ -88,6 +93,21 @@ After bootstrap:
 codex login
 zeditor
 ```
+
+Tailscale and VPN Unlimited also need account-specific login after install:
+
+```bash
+sudo tailscale up
+vpn-unlimited
+```
+
+Syncthing starts as a user service and serves its local web UI at:
+
+```text
+http://127.0.0.1:8384
+```
+
+Note: `vpn-unlimited-bin` is an AUR package and may build Qt5 WebEngine locally unless your system has a binary provider configured.
 
 ## Keybinds
 

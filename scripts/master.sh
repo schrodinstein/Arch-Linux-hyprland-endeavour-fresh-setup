@@ -21,6 +21,10 @@ Environment:
   ARCH_SETUP_TEMP_SUDO=0
   ARCH_SETUP_SKIP_ML4W=1
   ARCH_SETUP_ML4W_CHANNEL=stable|rolling
+  ARCH_SETUP_SKIP_VPN_UNLIMITED=1
+  ARCH_SETUP_TAILSCALE_SERVICE=0
+  ARCH_SETUP_VPN_UNLIMITED_SERVICE=0
+  ARCH_SETUP_SYNCTHING_SERVICE=0
 USAGE
 }
 
@@ -64,6 +68,7 @@ steps=(
   "10-packages.sh"
   "20-ml4w.sh"
   "30-apps.sh"
+  "35-network-services.sh"
   "40-configure-shell.sh"
   "50-configure-codex-zed.sh"
   "60-wallpapers.sh"
