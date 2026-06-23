@@ -9,7 +9,9 @@ INPERIOD_REPO_URL="${ARCH_SETUP_INPERIOD_REPO_URL:-https://github.com/mhfan/inpe
 INPERIOD_REF="${ARCH_SETUP_INPERIOD_REF:-}"
 INPERIOD_SRC_DIR="${ARCH_SETUP_INPERIOD_SRC_DIR:-$HOME/.local/src/inperiod}"
 INPERIOD_INSTALL_DIR="${ARCH_SETUP_INPERIOD_INSTALL_DIR:-$HOME/.local/opt/inperiod}"
-INPERIOD_BIN="$INPERIOD_SRC_DIR/target/release/inperiod"
+INPERIOD_BUILD_APP_DIR="${ARCH_SETUP_INPERIOD_BUILD_APP_DIR:-$INPERIOD_SRC_DIR/target/dx/inperiod/release/linux/app}"
+INPERIOD_BIN="${ARCH_SETUP_INPERIOD_BIN:-$INPERIOD_BUILD_APP_DIR/inperiod}"
+DIOXUS_CLI_VERSION="${ARCH_SETUP_DIOXUS_CLI_VERSION:-0.7.9}"
 
 ensure_source() {
   need_cmd git
@@ -56,6 +58,20 @@ generate_tailwind_css() {
   )
 }
 
+patch_inperiod_source() {
+  local main_rs="$INPERIOD_SRC_DIR/src/main.rs"
+  if grep -q 'asset!("assets/crystal-s")' "$main_rs"; then
+    log "patching Inperiod crystal asset directory reference"
+    sed -i 's#let assets_crystal = format!("{}", asset!("assets/crystal-s"));#let assets_crystal = "/assets/crystal-s".to_string();#' "$main_rs"
+  fi
+}
+
+prepare_inperiod_bundle_inputs() {
+  # Upstream Dioxus.toml references public/* even though the repository does
+  # not currently ship that directory.
+  mkdir -p "$INPERIOD_SRC_DIR/public"
+}
+
 build_inperiod() {
   if [[ "${ARCH_SETUP_INPERIOD_SKIP_BUILD:-0}" == 1 ]]; then
     [[ -x "$INPERIOD_BIN" ]] || die "Inperiod binary not found: $INPERIOD_BIN"
@@ -64,26 +80,52 @@ build_inperiod() {
   fi
 
   need_cmd cargo
+  ensure_dioxus_cli
+  ensure_rust_objcopy
 
-  log "building Inperiod native desktop app"
+  log "building Inperiod native desktop app with Dioxus asset bundling"
   (
     cd "$INPERIOD_SRC_DIR"
-    cargo build --release --no-default-features --features desktop
+    dx build --platform desktop --release
   )
+}
+
+ensure_dioxus_cli() {
+  local current=""
+  if command -v dx >/dev/null 2>&1; then
+    current=$(dx --version 2>/dev/null || true)
+    if grep -q "$DIOXUS_CLI_VERSION" <<< "$current"; then
+      return 0
+    fi
+    warn "found Dioxus CLI '$current', expected $DIOXUS_CLI_VERSION"
+  fi
+
+  log "installing Dioxus CLI $DIOXUS_CLI_VERSION for Inperiod asset bundling"
+  cargo install dioxus-cli --version "$DIOXUS_CLI_VERSION" --locked --force
+}
+
+ensure_rust_objcopy() {
+  local host rust_objcopy
+
+  host=$(rustc -vV | awk '/^host:/ { print $2 }')
+  rust_objcopy="$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-objcopy"
+
+  if [[ -x "$rust_objcopy" ]]; then
+    return 0
+  fi
+
+  die "Dioxus needs $rust_objcopy. Install the Arch llvm package, then rerun this script."
 }
 
 install_launcher() {
   local launcher="$HOME/.local/bin/inperiod"
-  local escaped_install_dir
   local tmp
 
-  escaped_install_dir=$(printf '%q' "$INPERIOD_INSTALL_DIR")
   tmp=$(mktemp)
   {
     printf '#!/usr/bin/env bash\n'
     printf 'set -Eeuo pipefail\n'
-    printf 'cd %s\n' "$escaped_install_dir"
-    printf 'exec ./inperiod "$@"\n'
+    printf 'exec %q "$@"\n' "$INPERIOD_INSTALL_DIR/inperiod"
   } > "$tmp"
   install -Dm755 "$tmp" "$launcher"
   rm -f "$tmp"
@@ -119,12 +161,12 @@ DESKTOP
 
 install_inperiod() {
   [[ -x "$INPERIOD_BIN" ]] || die "Inperiod binary not found: $INPERIOD_BIN"
-  [[ -f "$INPERIOD_SRC_DIR/assets/tailwind.css" ]] || die "Inperiod Tailwind CSS was not generated"
+  [[ -d "$INPERIOD_BUILD_APP_DIR" ]] || die "Inperiod Dioxus bundle not found: $INPERIOD_BUILD_APP_DIR"
 
   log "installing Inperiod to $INPERIOD_INSTALL_DIR"
-  install -Dm755 "$INPERIOD_BIN" "$INPERIOD_INSTALL_DIR/inperiod"
-  install -Dm644 "$INPERIOD_SRC_DIR/index.html" "$INPERIOD_INSTALL_DIR/index.html"
-  rsync -a --delete "$INPERIOD_SRC_DIR/assets/" "$INPERIOD_INSTALL_DIR/assets/"
+  mkdir -p "$INPERIOD_INSTALL_DIR"
+  rsync -a --delete "$INPERIOD_BUILD_APP_DIR/" "$INPERIOD_INSTALL_DIR/"
+  rsync -a "$INPERIOD_SRC_DIR/assets/crystal-s/" "$INPERIOD_INSTALL_DIR/assets/crystal-s/"
 
   install_launcher
   install_desktop_entry
@@ -132,6 +174,8 @@ install_inperiod() {
 
 ensure_source
 generate_tailwind_css
+patch_inperiod_source
+prepare_inperiod_bundle_inputs
 build_inperiod
 install_inperiod
 

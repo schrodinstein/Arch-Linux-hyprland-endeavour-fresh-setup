@@ -7,3 +7,6 @@ rxpipes 1.3.0
 
 # Terminal effects suite; we use `tarts donut` for the 3D donut.
 tarts 0.1.25
+
+# Matches the Dioxus 0.7 app stack used by mhfan/inperiod.
+dioxus-cli 0.7.9

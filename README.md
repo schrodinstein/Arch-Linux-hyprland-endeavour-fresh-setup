@@ -40,10 +40,10 @@ For an already cloned checkout:
 - Installs AUR apps currently tracked here: `rustmon-git` and `plexamp-bin`.
 - Installs Cargo terminal toys: `cyber-rain`, `rxpipes`, and `tarts` (`tarts donut`).
 - Installs `mhfan/inperiod` as a native standalone periodic table app.
-- Installs Wallhaven downloader support, removes previous `dharmx` wallpapers while keeping ML4W defaults, and fetches a fresh Wallhaven wallpaper every 20 minutes from `~/wallhaven-search-terms`.
+- Installs Wallhaven downloader support and fetches a fresh picker-compatible wallpaper every 20 minutes from `~/wallhaven-search-terms`.
 - Runs ML4W OS install if ML4W is not already present.
 - Fetches Rustmon Pokemon JSON/colorscripts with truecolor enabled.
-- Configures new Kitty Bash/Zsh sessions to print a normal-size random Pokemon with `--shiny 0.2`, then run Fastfetch without its image logo.
+- Configures new Kitty Bash/Zsh/Fish sessions to use a normal-size random Rustmon Pokemon with `--shiny 0.2` as the Fastfetch logo.
 - Configures Zed with the Codex ACP agent settings.
 - Creates a minimal Codex config without copying auth/session state.
 
@@ -86,7 +86,7 @@ After bootstrap:
 
 ```bash
 codex login
-zed
+zeditor
 ```
 
 ## Keybinds

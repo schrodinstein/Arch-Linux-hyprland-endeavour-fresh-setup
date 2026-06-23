@@ -41,10 +41,10 @@ install_search_terms() {
     "$TERMS_FILE"
 }
 
-remove_dharmx_wallpapers() {
+remove_legacy_imported_wallpapers() {
   mkdir -p "$WALLPAPER_DIR"
 
-  log "removing dharmx wallpapers while keeping ML4W defaults"
+  log "removing legacy imported wallpapers while keeping ML4W defaults"
   find "$WALLPAPER_DIR" -maxdepth 1 -type f -name 'dharmx-*' -delete
   rm -rf "$WALLPAPER_DIR/dharmx-walls"
   rm -f "$WALLPAPER_DIR/.arch-setup-dharmx-source"
@@ -90,6 +90,6 @@ install_wallhaven_timer() {
 clone_wallhaven_downloader
 install_wallhaven_downloader
 install_search_terms
-remove_dharmx_wallpapers
+remove_legacy_imported_wallpapers
 configure_ml4w_wallpaper_settings
 install_wallhaven_timer

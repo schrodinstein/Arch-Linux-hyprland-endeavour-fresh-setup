@@ -8,7 +8,7 @@ ARCH_SETUP_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 checks=(
   kitty
   fastfetch
-  zed
+  zeditor
   codex
   rustmon
   plexamp

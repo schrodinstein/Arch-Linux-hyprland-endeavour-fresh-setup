@@ -24,13 +24,18 @@ finder() {
 if [[ $(tty) == *"pts"* ]]; then
     if [[ ! -f "$HOME/.config/ml4w/settings/hide-fastfetch" ]]; then
         if [[ -n "${KITTY_WINDOW_ID:-}" ]] && command -v rustmon >/dev/null 2>&1; then
+            mkdir -p "$HOME/.cache/rustmon"
+            rustmon_logo="$HOME/.cache/rustmon/fastfetch-logo.ansi"
             env -u NO_COLOR TERM="${TERM:-xterm-256color}" COLORTERM="${COLORTERM:-truecolor}" \
-                rustmon print --name random --shiny 0.2
-            printf '\n'
-            env -u NO_COLOR fastfetch --logo none
+                rustmon print --name random --shiny 0.2 --hide-name > "$rustmon_logo"
+            env -u NO_COLOR fastfetch \
+                --file-raw "$rustmon_logo" \
+                --logo-padding-left 0 \
+                --logo-padding-right 2 \
+                --logo-padding-top 0 \
+                --logo-print-remaining false
         else
             fastfetch
         fi
     fi
 fi
-

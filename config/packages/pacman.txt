@@ -22,6 +22,7 @@ npm
 openai-codex
 ripgrep
 rust
+llvm
 zed
 
 # Hyprland/ML4W desktop pieces and user apps
