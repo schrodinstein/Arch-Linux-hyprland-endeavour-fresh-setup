@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+terms_file="${WALLHAVEN_TERMS_FILE:-$HOME/wallhaven-search-terms}"
+wallpaper_dir="${WALLHAVEN_WALLPAPER_DIR:-$HOME/.config/ml4w/wallpapers}"
+keep_count="${WALLHAVEN_KEEP:-72}"
+categories="${WALLHAVEN_CATEGORIES:-111}"
+purity="${WALLHAVEN_PURITY:-100}"
+atleast="${WALLHAVEN_ATLEAST:-1920x1080}"
+ratios="${WALLHAVEN_RATIOS:-16x9,16x10,21x9}"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ml4w-wallhaven"
+lock_dir="$cache_dir/lock"
+work_dir=""
+
+log() {
+  printf '[wallhaven-wallpaper] %s\n' "$*"
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf '[wallhaven-wallpaper] missing required command: %s\n' "$1" >&2
+    exit 1
+  }
+}
+
+sanitize() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]._-' '-' | sed -e 's/^-//' -e 's/-$//' | cut -c1-48
+}
+
+read_terms() {
+  [[ -f "$terms_file" ]] || {
+    printf '[wallhaven-wallpaper] search terms file not found: %s\n' "$terms_file" >&2
+    exit 1
+  }
+
+  mapfile -t terms < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$terms_file")
+  (( ${#terms[@]} > 0 )) || {
+    printf '[wallhaven-wallpaper] no search terms found in: %s\n' "$terms_file" >&2
+    exit 1
+  }
+}
+
+build_search_url() {
+  local query encoded
+  query=$1
+  encoded=$(jq -nr --arg q "$query" '$q|@uri')
+  printf 'https://wallhaven.cc/api/v1/search?categories=%s&purity=%s&sorting=random&order=desc&atleast=%s&ratios=%s&q=%s' \
+    "$categories" "$purity" "$atleast" "$ratios" "$encoded"
+}
+
+fetch_candidate_url() {
+  local query api_url api_json
+  query=$1
+  api_url=$(build_search_url "$query")
+  api_json="$work_dir/search.json"
+
+  if ! wget -q -O "$api_json" "$api_url"; then
+    return 1
+  fi
+
+  jq -r '.data[]?.path // empty' "$api_json" | shuf -n 1
+}
+
+download_candidate() {
+  local image_url filename ext lower_ext safe_term stamp raw_path dest
+  image_url=$1
+  filename="${image_url##*/}"
+  ext="${filename##*.}"
+  lower_ext="${ext,,}"
+  safe_term=$(sanitize "$selected_term")
+  stamp=$(date +%Y%m%d%H%M%S)
+
+  raw_path="$work_dir/$filename"
+  wget -q -O "$raw_path" "$image_url"
+
+  case "$lower_ext" in
+    jpg|jpeg|png)
+      dest="$wallpaper_dir/wallhaven-${stamp}-${safe_term}-${filename}"
+      install -Dm644 "$raw_path" "$dest"
+      ;;
+    *)
+      dest="$wallpaper_dir/wallhaven-${stamp}-${safe_term}-${filename%.*}.png"
+      magick "${raw_path}[0]" "$dest"
+      chmod 0644 "$dest"
+      ;;
+  esac
+
+  printf '%s\n' "$dest"
+}
+
+prune_old_wallhaven_files() {
+  (( keep_count > 0 )) || return 0
+
+  find "$wallpaper_dir" -maxdepth 1 -type f -name 'wallhaven-*' -printf '%T@ %p\n' \
+    | sort -rn \
+    | tail -n +"$((keep_count + 1))" \
+    | cut -d ' ' -f2- \
+    | xargs -r rm -f
+}
+
+need_cmd jq
+need_cmd wget
+need_cmd shuf
+need_cmd magick
+read_terms
+
+mkdir -p "$cache_dir" "$wallpaper_dir"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  log "another Wallhaven wallpaper run is already active; skipping"
+  exit 0
+fi
+trap '[[ -n "${work_dir:-}" ]] && rm -rf "$work_dir"; rm -rf "$lock_dir"' EXIT
+
+work_dir=$(mktemp -d "$cache_dir/run.XXXXXX")
+selected_term=""
+image_url=""
+
+for _ in {1..10}; do
+  selected_term=$(printf '%s\n' "${terms[@]}" | shuf -n 1)
+  image_url=$(fetch_candidate_url "$selected_term" || true)
+  [[ -n "$image_url" ]] && break
+done
+
+if [[ -z "$image_url" ]]; then
+  printf '[wallhaven-wallpaper] no Wallhaven result found after retries\n' >&2
+  exit 1
+fi
+
+wallpaper_path=$(download_candidate "$image_url")
+prune_old_wallhaven_files
+
+mkdir -p "$HOME/.config/ml4w/settings"
+printf '%s\n' "$wallpaper_dir" > "$HOME/.config/ml4w/settings/wallpaper-folder"
+printf '1200\n' > "$HOME/.config/ml4w/settings/wallpaper-automation"
+
+if [[ -z "${WAYLAND_DISPLAY:-}" && -z "${DISPLAY:-}" ]]; then
+  log "downloaded $wallpaper_path for '$selected_term'; no graphical session available to apply it"
+  exit 0
+fi
+
+if [[ -x "$HOME/.config/ml4w/scripts/ml4w-wallpaper" ]]; then
+  "$HOME/.config/ml4w/scripts/ml4w-wallpaper" "$wallpaper_path" --notifications false
+  log "set $wallpaper_path from search term '$selected_term'"
+else
+  log "downloaded $wallpaper_path for '$selected_term'; ML4W wallpaper script not found"
+fi

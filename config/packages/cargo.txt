@@ -1,0 +1,9 @@
+# crate version
+# Polished Matrix-style terminal rain app with presets, config, and benchmarks.
+cyber-rain 0.3.0
+
+# MIT-licensed Rust version of the classic terminal pipes screensaver.
+rxpipes 1.3.0
+
+# Terminal effects suite; we use `tarts donut` for the 3D donut.
+tarts 0.1.25

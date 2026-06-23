@@ -1,0 +1,12 @@
+[Unit]
+Description=Fetch a new Wallhaven wallpaper every 20 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=20min
+AccuracySec=1min
+Persistent=true
+Unit=ml4w-wallhaven-wallpaper.service
+
+[Install]
+WantedBy=timers.target

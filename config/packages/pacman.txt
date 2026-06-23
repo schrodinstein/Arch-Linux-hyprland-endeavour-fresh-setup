@@ -1,0 +1,42 @@
+# Base build/bootstrap tooling
+base-devel
+ca-certificates
+curl
+git
+gnupg
+gum
+imagemagick
+jq
+openssh
+rsync
+sudo
+tar
+unzip
+wget
+
+# Shell/editor/dev tools
+fd
+fzf
+nodejs
+npm
+openai-codex
+ripgrep
+rust
+zed
+
+# Hyprland/ML4W desktop pieces and user apps
+fastfetch
+fuse2
+fuse3
+hyprland
+kitty
+libappindicator
+pipewire
+pipewire-pulse
+webkit2gtk-4.1
+wireplumber
+xdg-desktop-portal
+xdg-desktop-portal-gtk
+xdg-desktop-portal-hyprland
+xdg-utils
+xdotool

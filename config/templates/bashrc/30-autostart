@@ -1,0 +1,36 @@
+# -----------------------------------------------------
+# AUTOSTART
+# -----------------------------------------------------
+
+# The 'finder' command (Fuzzy Finder)
+finder() {
+    local result
+    result=$("$HOME/.config/ml4w/bin/ml4w-finder")
+
+    if [[ "$result" == TYPE_DIR:* ]]; then
+        local target_dir="${result#TYPE_DIR:}"
+        cd "$target_dir" && ls
+    elif [[ "$result" == TYPE_FILE:* ]]; then
+        "${EDITOR:-nano}" "${result#TYPE_FILE:}"
+    else
+        echo "Could not read $result" >&2
+        return 1
+    fi
+}
+
+# -----------------------------------------------------
+# Fastfetch
+# -----------------------------------------------------
+if [[ $(tty) == *"pts"* ]]; then
+    if [[ ! -f "$HOME/.config/ml4w/settings/hide-fastfetch" ]]; then
+        if [[ -n "${KITTY_WINDOW_ID:-}" ]] && command -v rustmon >/dev/null 2>&1; then
+            env -u NO_COLOR TERM="${TERM:-xterm-256color}" COLORTERM="${COLORTERM:-truecolor}" \
+                rustmon print --name random --shiny 0.2
+            printf '\n'
+            env -u NO_COLOR fastfetch --logo none
+        else
+            fastfetch
+        fi
+    fi
+fi
+
