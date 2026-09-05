@@ -35,6 +35,7 @@ zed
 fastfetch
 fuse2
 fuse3
+gamescope
 hyprland
 kitty
 libappindicator

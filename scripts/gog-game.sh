@@ -15,6 +15,8 @@ usage() {
 Usage:
   scripts/gog-game.sh verify INSTALLER.sh
   scripts/gog-game.sh install [options] INSTALLER.sh
+  scripts/gog-game.sh configure [options] SLUG
+  scripts/gog-game.sh launch SLUG [-- LAUNCHER_ARGS...]
   scripts/gog-game.sh list
   scripts/gog-game.sh uninstall [options] SLUG
 
@@ -24,8 +26,16 @@ Install options:
   --dest DIR           Override install destination.
   --addon-to SLUG      Install DLC/add-on content into a tracked base game.
   --interactive        Use MojoSetup's terminal UI instead of unattended flags.
+  --no-compat-profile  Do not apply a known per-game compatibility profile.
   --dry-run            Show what would happen without installing.
   --force              Allow installing into an existing directory/state slot.
+
+Configure options:
+  --env NAME=VALUE     Export an environment variable when launching; repeatable.
+  --gamescope GAME_SIZE OUTPUT_SIZE
+                       Fit GAME_SIZE inside a fullscreen OUTPUT_SIZE (for example,
+                       1920x1080 native).
+  --reset              Restore original desktop entries and remove launch overrides.
 
 Uninstall options:
   --yes                Do not prompt before uninstalling.
@@ -39,6 +49,7 @@ Environment:
 
 Notes:
   Installs are per-user. Saves/config under game-specific XDG paths are not removed.
+  Configure keeps compatibility settings outside vendor game files and updates launchers.
 USAGE
 }
 
@@ -60,6 +71,42 @@ validate_slug() {
   local slug=$1
   [[ "$slug" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "invalid slug: $slug"
   [[ "$slug" != "." && "$slug" != ".." ]] || die "invalid slug: $slug"
+}
+
+validate_resolution() {
+  local resolution=$1
+  [[ "$resolution" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] \
+    || die "invalid resolution (expected WIDTHxHEIGHT): $resolution"
+}
+
+validate_output_resolution() {
+  local resolution=$1
+  [[ "$resolution" == "native" ]] || validate_resolution "$resolution"
+}
+
+detect_native_output_resolution() {
+  local resolution=""
+
+  if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] \
+      && command -v hyprctl >/dev/null 2>&1 \
+      && command -v jq >/dev/null 2>&1; then
+    resolution=$(
+      hyprctl monitors -j 2>/dev/null \
+        | jq -er '([.[] | select(.focused == true)][0] // .[0]) | "\(.width)x\(.height)"' \
+          2>/dev/null \
+        || true
+    )
+  fi
+
+  if [[ -z "$resolution" ]] && command -v xrandr >/dev/null 2>&1; then
+    resolution=$(xrandr --current 2>/dev/null \
+      | sed -n 's/.* current \([1-9][0-9]*\) x \([1-9][0-9]*\).*/\1x\2/p' \
+      | sed -n '1p')
+  fi
+
+  [[ "$resolution" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] \
+    || die "could not detect the active output resolution; configure an explicit WIDTHxHEIGHT"
+  printf '%s\n' "$resolution"
 }
 
 normalize_install_dir() {
@@ -324,6 +371,313 @@ load_manifest() {
   . "$manifest"
 }
 
+desktop_candidates() {
+  local directory
+  for directory in "$XDG_DATA_HOME/applications" "$HOME/Desktop"; do
+    [[ -d "$directory" ]] || continue
+    find "$directory" -mindepth 1 -maxdepth 1 -type f -name '*.desktop' -print
+  done | sort -u
+}
+
+desktop_matches_game() {
+  local desktop=$1
+  local install_dir=$2
+  grep -Fqx "Path=$install_dir" "$desktop" \
+    || grep -Fq "\"$install_dir/start.sh\"" "$desktop"
+}
+
+rewrite_desktop_entry() {
+  local desktop=$1
+  local display_name=$2
+  local launcher=$3
+  local temporary
+  temporary=$(mktemp "$(dirname -- "$desktop")/.gog-desktop.XXXXXX")
+
+  awk -v display_name="$display_name" -v launcher="$launcher" '
+    BEGIN { in_desktop_entry = 0 }
+    /^\[Desktop Entry\]$/ { in_desktop_entry = 1; print; next }
+    /^\[/ { in_desktop_entry = 0; print; next }
+    in_desktop_entry && /^(Encoding|Value)=/ { next }
+    in_desktop_entry && /^Name=/ { print "Name=" display_name; next }
+    in_desktop_entry && /^GenericName=/ { print "GenericName=" display_name; next }
+    in_desktop_entry && /^Comment=/ { print "Comment=Launch " display_name; next }
+    in_desktop_entry && /^Exec=/ { print "Exec=" launcher; next }
+    { print }
+  ' "$desktop" > "$temporary"
+
+  chmod --reference="$desktop" "$temporary"
+  mv -f -- "$temporary" "$desktop"
+}
+
+configure_desktop_entries() {
+  local install_dir=$1
+  local state_dir=$2
+  local display_name=$3
+  local launcher=$4
+  local backup_root="$state_dir/desktop-backups"
+  local desktop backup configured=0
+
+  while IFS= read -r desktop; do
+    desktop_matches_game "$desktop" "$install_dir" || continue
+    backup="$backup_root$desktop"
+    if [[ ! -e "$backup" ]]; then
+      mkdir -p -- "$(dirname -- "$backup")"
+      cp -a -- "$desktop" "$backup"
+    fi
+    rewrite_desktop_entry "$desktop" "$display_name" "$launcher"
+    log "configured desktop entry: $desktop"
+    configured=1
+  done < <(desktop_candidates)
+
+  if [[ "$configured" == "0" ]]; then
+    warn "no desktop entries referenced: $install_dir"
+  fi
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$XDG_DATA_HOME/applications" >/dev/null 2>&1 || true
+  fi
+}
+
+refresh_configured_desktop_entries() {
+  local slug=$1
+  local state_dir install_dir display_name launcher_command
+  state_dir=$(state_dir_for_slug "$slug")
+  [[ -r "$state_dir/launch.conf" ]] || return 0
+
+  install_dir=$(manifest_field "$slug" GOG_INSTALL_DIR) \
+    || die "configured game has no install destination: $slug"
+  display_name=$(manifest_field "$slug" GOG_NAME) \
+    || die "configured game has no display name: $slug"
+  install_dir=$(normalize_install_dir "$install_dir")
+  launcher_command="\"$ARCH_SETUP_ROOT/scripts/gog-game.sh\" launch $slug"
+  configure_desktop_entries \
+    "$install_dir" "$state_dir" "$display_name" "$launcher_command"
+}
+
+restore_desktop_entries() {
+  local state_dir=$1
+  local backup_root="$state_dir/desktop-backups"
+  local backup target
+  [[ -d "$backup_root" ]] || return 0
+
+  while IFS= read -r backup; do
+    target=${backup#"$backup_root"}
+    [[ "$target" == /* ]] || die "invalid desktop backup path: $backup"
+    mkdir -p -- "$(dirname -- "$target")"
+    cp -a -- "$backup" "$target"
+    log "restored desktop entry: $target"
+  done < <(find "$backup_root" -type f -print | sort)
+
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$XDG_DATA_HOME/applications" >/dev/null 2>&1 || true
+  fi
+}
+
+launch_game() {
+  local slug=${1:-}
+  [[ -n "$slug" ]] || die "missing slug"
+  shift
+  if [[ ${1:-} == "--" ]]; then
+    shift
+  fi
+
+  validate_slug "$slug"
+  load_manifest "$slug"
+  [[ -z "$GOG_PARENT_SLUG" ]] || die "launch the base game instead: $GOG_PARENT_SLUG"
+  GOG_INSTALL_DIR=$(normalize_install_dir "$GOG_INSTALL_DIR")
+  ensure_user
+
+  local state_dir launch_config launch_environment launch_target
+  local assignment environment_name
+  local gamescope_game_size=""
+  local gamescope_output_size=""
+  local -a game_environment=()
+  state_dir=$(state_dir_for_slug "$slug")
+  launch_config="$state_dir/launch.conf"
+  launch_environment="$state_dir/launch.env"
+  launch_target="$GOG_INSTALL_DIR/start.sh"
+
+  if [[ -r "$launch_config" ]]; then
+    GOG_LAUNCH_TARGET=""
+    GOG_GAMESCOPE_GAME_SIZE=""
+    GOG_GAMESCOPE_OUTPUT_SIZE=""
+    # shellcheck disable=SC1090
+    . "$launch_config"
+    launch_target=${GOG_LAUNCH_TARGET:-$launch_target}
+    gamescope_game_size=${GOG_GAMESCOPE_GAME_SIZE:-}
+    gamescope_output_size=${GOG_GAMESCOPE_OUTPUT_SIZE:-}
+  fi
+  if [[ -r "$launch_environment" ]]; then
+    mapfile -d '' -t game_environment < "$launch_environment"
+    for assignment in "${game_environment[@]}"; do
+      [[ "$assignment" == *=* ]] || die "invalid entry in launch environment"
+      environment_name=${assignment%%=*}
+      [[ "$environment_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+        || die "invalid variable in launch environment: $environment_name"
+    done
+  fi
+
+  case "$launch_target" in
+    "$GOG_INSTALL_DIR"/*) ;;
+    *) die "configured launcher is outside the game directory: $launch_target" ;;
+  esac
+  [[ -x "$launch_target" ]] || die "game launcher is not executable: $launch_target"
+
+  local -a launch_command=(env "${game_environment[@]}" "$launch_target" "$@")
+  if [[ -n "$gamescope_game_size" || -n "$gamescope_output_size" ]]; then
+    [[ -n "$gamescope_game_size" && -n "$gamescope_output_size" ]] \
+      || die "both Gamescope resolutions must be configured"
+    validate_resolution "$gamescope_game_size"
+    validate_output_resolution "$gamescope_output_size"
+    command -v gamescope >/dev/null 2>&1 || die "Gamescope is configured but not installed"
+
+    if [[ "$gamescope_output_size" == "native" ]]; then
+      gamescope_output_size=$(detect_native_output_resolution)
+    fi
+
+    local game_width=${gamescope_game_size%x*}
+    local game_height=${gamescope_game_size#*x}
+    local output_width=${gamescope_output_size%x*}
+    local output_height=${gamescope_output_size#*x}
+    local -a gamescope_command=(gamescope)
+    if [[ ${XDG_SESSION_TYPE:-} == "wayland" ]]; then
+      gamescope_command+=(--backend wayland)
+    fi
+    gamescope_command+=(
+      -f
+      -W "$output_width"
+      -H "$output_height"
+      -w "$game_width"
+      -h "$game_height"
+      -S fit
+      --
+    )
+    launch_command=("${gamescope_command[@]}" "${launch_command[@]}")
+  fi
+  exec "${launch_command[@]}"
+}
+
+configure_game() {
+  local slug=""
+  local gamescope_game_size=""
+  local gamescope_output_size=""
+  local reset=0
+  local assignment name value
+  local -a launch_environment=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --env)
+        assignment=${2:?missing NAME=VALUE}
+        [[ "$assignment" == *=* ]] || die "environment override must be NAME=VALUE"
+        name=${assignment%%=*}
+        value=${assignment#*=}
+        [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid environment variable name: $name"
+        [[ "$value" != *$'\n'* ]] || die "environment values cannot contain newlines"
+        launch_environment+=("$assignment")
+        shift 2
+        ;;
+      --gamescope)
+        gamescope_game_size=${2:?missing game resolution}
+        gamescope_output_size=${3:?missing output resolution}
+        validate_resolution "$gamescope_game_size"
+        validate_output_resolution "$gamescope_output_size"
+        shift 3
+        ;;
+      --reset)
+        reset=1
+        shift
+        ;;
+      --help)
+        usage
+        exit 0
+        ;;
+      -*)
+        die "unknown configure option: $1"
+        ;;
+      *)
+        [[ -z "$slug" ]] || die "unexpected extra argument: $1"
+        slug=$1
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n "$slug" ]] || die "missing slug"
+  validate_slug "$slug"
+  load_manifest "$slug"
+  [[ -z "$GOG_PARENT_SLUG" ]] || die "configure the base game instead: $GOG_PARENT_SLUG"
+  GOG_INSTALL_DIR=$(normalize_install_dir "$GOG_INSTALL_DIR")
+  [[ -x "$GOG_INSTALL_DIR/start.sh" ]] || die "game launcher is missing: $GOG_INSTALL_DIR/start.sh"
+  ensure_user
+
+  local state_dir launch_config launch_environment_file temporary
+  state_dir=$(state_dir_for_slug "$slug")
+  launch_config="$state_dir/launch.conf"
+  launch_environment_file="$state_dir/launch.env"
+
+  if [[ "$reset" == "1" ]]; then
+    [[ ${#launch_environment[@]} -eq 0 \
+        && -z "$gamescope_game_size" \
+        && -z "$gamescope_output_size" ]] \
+      || die "--reset cannot be combined with launch overrides"
+    restore_desktop_entries "$state_dir"
+    rm -rf -- "$state_dir/desktop-backups"
+    rm -f -- "$launch_config" "$launch_environment_file"
+    log "removed launch overrides for: $slug"
+    return 0
+  fi
+
+  temporary=$(mktemp "$state_dir/.launch.conf.XXXXXX")
+  {
+    printf 'GOG_LAUNCH_TARGET=%s\n' "$(shell_quote "$GOG_INSTALL_DIR/start.sh")"
+    printf 'GOG_GAMESCOPE_GAME_SIZE=%s\n' "$(shell_quote "$gamescope_game_size")"
+    printf 'GOG_GAMESCOPE_OUTPUT_SIZE=%s\n' "$(shell_quote "$gamescope_output_size")"
+  } > "$temporary"
+  chmod 600 "$temporary"
+  mv -f -- "$temporary" "$launch_config"
+
+  temporary=$(mktemp "$state_dir/.launch.env.XXXXXX")
+  : > "$temporary"
+  for assignment in "${launch_environment[@]}"; do
+    printf '%s\0' "$assignment" >> "$temporary"
+  done
+  chmod 600 "$temporary"
+  mv -f -- "$temporary" "$launch_environment_file"
+
+  refresh_configured_desktop_entries "$slug"
+  log "configured launch overrides for: $slug"
+}
+
+compatibility_profile_for_slug() {
+  case "$1" in
+    depth-of-extinction|halcyon-6-lightspeed-edition)
+      printf '%s\n' "SDL X11 video backend"
+      ;;
+    exiled-kingdoms)
+      printf '%s\n' "1920x1080 Gamescope fit on the active output"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+apply_known_compatibility_profile() {
+  local slug=$1
+  local profile
+  profile=$(compatibility_profile_for_slug "$slug") || return 0
+  log "applying compatibility profile: $profile"
+
+  case "$slug" in
+    depth-of-extinction|halcyon-6-lightspeed-edition)
+      configure_game --env SDL_VIDEODRIVER=x11 "$slug"
+      ;;
+    exiled-kingdoms)
+      configure_game --gamescope 1920x1080 native "$slug"
+      ;;
+  esac
+}
+
 verify_installer() {
   local installer=${1:-}
   [[ -n "$installer" ]] || die "missing installer path"
@@ -383,6 +737,7 @@ install_game() {
   local dependency=""
   local destination_set=0
   local interactive=0
+  local compat_profile=1
   local dry_run=0
   local force=0
 
@@ -407,6 +762,10 @@ install_game() {
         ;;
       --interactive)
         interactive=1
+        shift
+        ;;
+      --no-compat-profile)
+        compat_profile=0
         shift
         ;;
       --dry-run)
@@ -505,6 +864,11 @@ install_game() {
     else
       log "installer mode: unattended MojoSetup flags"
     fi
+    if [[ -z "$parent_slug" && "$compat_profile" == "1" ]]; then
+      local profile
+      profile=$(compatibility_profile_for_slug "$slug" || true)
+      [[ -z "$profile" ]] || log "compatibility profile: $profile"
+    fi
     return 0
   fi
 
@@ -590,6 +954,12 @@ install_game() {
     "$slug" "$name" "$installer" "$install_dir" "$state_dir" "$checksum" \
     "$parent_slug" "$dependency" "$uninstaller"
 
+  if [[ -n "$parent_slug" ]]; then
+    refresh_configured_desktop_entries "$parent_slug"
+  elif [[ "$compat_profile" == "1" ]]; then
+    apply_known_compatibility_profile "$slug"
+  fi
+
   log "installed: $name"
   log "uninstall with: $ARCH_SETUP_ROOT/scripts/gog-game.sh uninstall $slug"
   trap - RETURN
@@ -601,16 +971,20 @@ list_games() {
     return 0
   fi
 
-  local manifest found=0
+  local manifest configured found=0
   while IFS= read -r manifest; do
     GOG_PARENT_SLUG=""
     # shellcheck disable=SC1090
     . "$manifest"
+    configured=""
+    if [[ -f "$(dirname -- "$manifest")/launch.conf" ]]; then
+      configured=" [configured launcher]"
+    fi
     printf '%-28s %s\n' "$GOG_SLUG" "$GOG_INSTALL_DIR"
     if [[ -n "$GOG_PARENT_SLUG" ]]; then
       printf '  %s [add-on to %s]\n' "$GOG_NAME" "$GOG_PARENT_SLUG"
     else
-      printf '  %s\n' "$GOG_NAME"
+      printf '  %s%s\n' "$GOG_NAME" "$configured"
     fi
     found=1
   done < <(find "$GOG_STATE_DIR" -mindepth 2 -maxdepth 2 -name manifest.env -print | sort)
@@ -774,6 +1148,14 @@ main() {
     install)
       shift
       install_game "$@"
+      ;;
+    configure)
+      shift
+      configure_game "$@"
+      ;;
+    launch)
+      shift
+      launch_game "$@"
       ;;
     list)
       shift

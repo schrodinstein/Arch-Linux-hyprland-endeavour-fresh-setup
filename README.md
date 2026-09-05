@@ -229,6 +229,9 @@ Local GOG Linux `.sh` installers can be installed with a tracked per-user wrappe
 ./scripts/gog-game.sh verify ~/Downloads/game_installer.sh
 ./scripts/gog-game.sh install ~/Downloads/game_installer.sh
 ./scripts/gog-game.sh install --addon-to base-game-slug ~/Downloads/dlc_installer.sh
+./scripts/gog-game.sh configure game-slug --env SDL_VIDEODRIVER=x11
+./scripts/gog-game.sh configure game-slug --gamescope 1920x1080 native
+./scripts/gog-game.sh launch game-slug
 ./scripts/gog-game.sh list
 ./scripts/gog-game.sh uninstall game-slug
 ```
@@ -241,6 +244,11 @@ Defaults:
 - Uninstall uses the bundled GOG uninstaller and removes tracked desktop/menu files.
 - DLC installers are linked to their tracked base game automatically when their dependency metadata is available.
 - Add-on removal deletes files introduced by the DLC and restores backups of any files it overwrote.
+- Known compatibility profiles are applied automatically for Depth of Extinction, Halcyon 6, and Exiled Kingdoms; use `install --no-compat-profile` to opt out.
+- Per-game launch environment overrides are stored outside vendor files and can be removed with `configure --reset`.
+- Gamescope profiles can fit a legacy game's fixed resolution inside an explicit output size or the active output's `native` resolution.
+- Installing DLC refreshes an existing managed launcher if the vendor installer overwrites it.
+- Configured desktop entries are backed up, redirected through the managed launcher, and restored on reset.
 - Game saves and config outside the install directory are left alone.
 
 Run installs from a real terminal; some MojoSetup installers need an attached TTY even in unattended mode.
