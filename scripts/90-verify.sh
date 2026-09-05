@@ -17,6 +17,10 @@ checks=(
   syncthing
   tailscale
   tmux
+  okular
+  pdfarranger
+  qpdf
+  Pdf4QtEditor
   tmux-ml4w-theme
   tmux-workspace
   vpn-unlimited-import-ovpn
@@ -37,7 +41,9 @@ for cmd in "${checks[@]}"; do
 done
 
 package_checks=(
+  blend2d
   networkmanager-openvpn
+  pdf4qt
 )
 
 for package in "${package_checks[@]}"; do
@@ -47,6 +53,24 @@ for package in "${package_checks[@]}"; do
     warn "missing package: $package"
   fi
 done
+
+if [[ -e "$HOME/.local/opt/softmaker-office-nx/current" ]]; then
+  for cmd in textmakernx planmakernx presentationsnx; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      log "ok: $cmd -> $(command -v "$cmd")"
+    else
+      warn "missing SoftMaker launcher: $cmd"
+    fi
+  done
+else
+  log "optional SoftMaker Office NX archive was not installed"
+fi
+
+if [[ -f "$HOME/.local/share/fonts/megafont-now-arch-setup/.source-sha256" ]]; then
+  log "ok: MegaFont NOW user fonts installed"
+else
+  log "optional MegaFont NOW archive was not installed"
+fi
 
 system_services=(
   NetworkManager.service
@@ -85,5 +109,20 @@ if [[ -f "$HOME/.local/share/rustmon/pokemon.json" ]]; then
 else
   warn "missing Rustmon pokemon.json"
 fi
+
+wallpaper_term_files=(
+  "$HOME/wallhaven-search-terms"
+  "$HOME/.config/ml4w/wallpaper-sources/wikimedia-search-terms"
+  "$HOME/.config/ml4w/wallpaper-sources/nasa-search-terms"
+  "$HOME/.config/ml4w/wallpaper-sources/museum-search-terms"
+)
+
+for term_file in "${wallpaper_term_files[@]}"; do
+  if [[ -s "$term_file" ]]; then
+    log "ok: wallpaper search terms: $term_file"
+  else
+    warn "missing wallpaper search terms: $term_file"
+  fi
+done
 
 log "verification complete"

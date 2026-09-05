@@ -6,13 +6,24 @@ ARCH_SETUP_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ARCH_SETUP_ROOT/scripts/lib/common.sh"
 
 KEYBINDINGS_FILE="${ARCH_SETUP_HYPR_KEYBINDINGS:-$HOME/.config/hypr/conf/keybindings/default.lua}"
-WALLHAVEN_BIND='hl.bind(mainMod .. " + CTRL + SHIFT + W", hl.dsp.exec_cmd("systemctl --user start ml4w-wallhaven-wallpaper.service"), { description = "Fetch a fresh Wallhaven wallpaper" })'
+WALLPAPER_BIND='hl.bind(mainMod .. " + CTRL + SHIFT + W", hl.dsp.exec_cmd("systemctl --user start ml4w-wallhaven-wallpaper.service"), { description = "Fetch a fresh random wallpaper" })'
 INPERIOD_BIND='hl.bind(mainMod .. " + SHIFT + P", hl.dsp.exec_cmd("~/.local/bin/inperiod"), { description = "Open Inperiod periodic table" })'
 TMUX_BIND='hl.bind(mainMod .. " + SHIFT + RETURN", hl.dsp.exec_cmd("kitty --class tmux-workspace --title tmux:main -e ~/.local/bin/tmux-workspace main"), { description = "Open persistent tmux workspace" })'
 
-configure_wallhaven_keybind() {
+configure_wallpaper_keybind() {
   if [[ ! -f "$KEYBINDINGS_FILE" ]]; then
     warn "Hyprland keybinding file not found: $KEYBINDINGS_FILE"
+    return 0
+  fi
+
+  if grep -Fq 'systemctl --user start ml4w-wallhaven-wallpaper.service' "$KEYBINDINGS_FILE"; then
+    local description_tmp
+    description_tmp=$(mktemp)
+    sed 's/Fetch a fresh Wallhaven wallpaper/Fetch a fresh random wallpaper/' \
+      "$KEYBINDINGS_FILE" > "$description_tmp"
+    install -m 0644 "$description_tmp" "$KEYBINDINGS_FILE"
+    rm -f "$description_tmp"
+    log "SUPER+CTRL+SHIFT+W wallpaper refresh binding already present"
     return 0
   fi
 
@@ -23,7 +34,7 @@ configure_wallhaven_keybind() {
 
   local tmp
   tmp=$(mktemp)
-  awk -v bind="$WALLHAVEN_BIND" '
+  awk -v bind="$WALLPAPER_BIND" '
     {
       print
       if (!inserted && $0 ~ /mainMod \.\. " \+ CTRL \+ W"/) {
@@ -40,7 +51,7 @@ configure_wallhaven_keybind() {
 
   install -m 0644 "$tmp" "$KEYBINDINGS_FILE"
   rm -f "$tmp"
-  log "added SUPER+CTRL+SHIFT+W Wallhaven wallpaper refresh binding"
+  log "added SUPER+CTRL+SHIFT+W wallpaper refresh binding"
 }
 
 configure_inperiod_keybind() {
@@ -109,6 +120,6 @@ configure_tmux_keybind() {
   log "added SUPER+SHIFT+RETURN persistent tmux workspace binding"
 }
 
-configure_wallhaven_keybind
+configure_wallpaper_keybind
 configure_inperiod_keybind
 configure_tmux_keybind

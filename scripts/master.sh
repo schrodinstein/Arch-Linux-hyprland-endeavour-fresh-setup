@@ -26,6 +26,10 @@ Environment:
   ARCH_SETUP_TAILSCALE_SYSTRAY=0
   ARCH_SETUP_TAILSCALE_FIREWALL_MODE=nftables|auto|iptables
   ARCH_SETUP_SYNCTHING_SERVICE=0
+  ARCH_SETUP_SOFTMAKER=0
+  ARCH_SETUP_SOFTMAKER_ARCHIVE=/path/to/softmaker-office-nx-amd64.tgz
+  ARCH_SETUP_MEGAFONT=0
+  ARCH_SETUP_MEGAFONT_ARCHIVE=/path/to/megafontnow.zip
 USAGE
 }
 
@@ -69,6 +73,7 @@ steps=(
   "10-packages.sh"
   "20-ml4w.sh"
   "30-apps.sh"
+  "32-documents.sh"
   "35-network-services.sh"
   "40-configure-shell.sh"
   "45-configure-tmux.sh"

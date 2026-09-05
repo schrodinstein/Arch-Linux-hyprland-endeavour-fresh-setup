@@ -1,2 +1,4 @@
 rustmon-git
 plexamp-bin
+blend2d
+pdf4qt

@@ -9,7 +9,8 @@ WALLHAVEN_REPO="${ARCH_SETUP_WALLHAVEN_REPO:-https://github.com/macearl/Wallhave
 WALLHAVEN_TMP="${ARCH_SETUP_WALLHAVEN_TMP:-${TMPDIR:-/tmp}/arch-setup-wallhaven-downloader}"
 WALLPAPER_DIR="${ARCH_SETUP_WALLPAPER_DIR:-$HOME/.config/ml4w/wallpapers}"
 TERMS_FILE="${ARCH_SETUP_WALLHAVEN_TERMS_FILE:-$HOME/wallhaven-search-terms}"
-ENABLE_TIMER="${ARCH_SETUP_WALLHAVEN_TIMER:-1}"
+SOURCE_TERMS_DIR="${ARCH_SETUP_WALLPAPER_SOURCES_DIR:-$HOME/.config/ml4w/wallpaper-sources}"
+ENABLE_TIMER="${ARCH_SETUP_WALLPAPER_TIMER:-${ARCH_SETUP_WALLHAVEN_TIMER:-1}}"
 
 clone_wallhaven_downloader() {
   need_cmd git
@@ -39,6 +40,22 @@ install_search_terms() {
   install_template \
     "$ARCH_SETUP_ROOT/config/templates/wallhaven/wallhaven-search-terms" \
     "$TERMS_FILE"
+}
+
+install_source_search_terms() {
+  local source destination
+
+  for source in wikimedia nasa museum; do
+    destination="$SOURCE_TERMS_DIR/$source-search-terms"
+    if [[ -f "$destination" ]]; then
+      log "preserving existing $source search terms: $destination"
+      continue
+    fi
+
+    install_template \
+      "$ARCH_SETUP_ROOT/config/templates/wallpaper-sources/$source-search-terms" \
+      "$destination"
+  done
 }
 
 remove_legacy_imported_wallpapers() {
@@ -77,19 +94,20 @@ install_wallhaven_timer() {
   fi
 
   if [[ "$ENABLE_TIMER" == "1" ]] && command -v systemctl >/dev/null 2>&1; then
-    log "enabling 20-minute Wallhaven wallpaper timer"
+    log "enabling 20-minute multi-source wallpaper timer"
     if systemctl --user daemon-reload && systemctl --user enable --now ml4w-wallhaven-wallpaper.timer; then
       return 0
     fi
     warn "could not enable user timer automatically; timer files were installed"
   else
-    warn "Wallhaven wallpaper timer installed but not enabled"
+    warn "wallpaper timer installed but not enabled"
   fi
 }
 
 clone_wallhaven_downloader
 install_wallhaven_downloader
 install_search_terms
+install_source_search_terms
 remove_legacy_imported_wallpapers
 configure_ml4w_wallpaper_settings
 install_wallhaven_timer

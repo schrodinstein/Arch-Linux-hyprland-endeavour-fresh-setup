@@ -1,146 +1,545 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-terms_file="${WALLHAVEN_TERMS_FILE:-$HOME/wallhaven-search-terms}"
-wallpaper_dir="${WALLHAVEN_WALLPAPER_DIR:-$HOME/.config/ml4w/wallpapers}"
-keep_count="${WALLHAVEN_KEEP:-72}"
+wallhaven_terms_file="${WALLHAVEN_TERMS_FILE:-$HOME/wallhaven-search-terms}"
+sources_dir="${WALLPAPER_SOURCES_DIR:-$HOME/.config/ml4w/wallpaper-sources}"
+wikimedia_terms_file="${WIKIMEDIA_TERMS_FILE:-$sources_dir/wikimedia-search-terms}"
+nasa_terms_file="${NASA_TERMS_FILE:-$sources_dir/nasa-search-terms}"
+museum_terms_file="${MUSEUM_TERMS_FILE:-$sources_dir/museum-search-terms}"
+wallpaper_dir="${WALLPAPER_DIR:-${WALLHAVEN_WALLPAPER_DIR:-$HOME/.config/ml4w/wallpapers}}"
+keep_count="${WALLPAPER_KEEP:-${WALLHAVEN_KEEP:-72}}"
+provider_pool_spec="${WALLPAPER_PROVIDER_POOL:-wallhaven,wallhaven,wallhaven,wallhaven,wallhaven,wikimedia,wikimedia,nasa,met,artic}"
+min_width="${WALLPAPER_MIN_WIDTH:-1600}"
+min_height="${WALLPAPER_MIN_HEIGHT:-900}"
+min_ratio="${WALLPAPER_MIN_RATIO:-1.2}"
+max_bytes="${WALLPAPER_MAX_BYTES:-52428800}"
+max_attempts="${WALLPAPER_MAX_ATTEMPTS:-6}"
 categories="${WALLHAVEN_CATEGORIES:-111}"
 purity="${WALLHAVEN_PURITY:-100}"
 atleast="${WALLHAVEN_ATLEAST:-1920x1080}"
 ratios="${WALLHAVEN_RATIOS:-16x9,16x10,21x9}"
-cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ml4w-wallhaven"
-lock_dir="$cache_dir/lock"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ml4w-wallpapers"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/ml4w-wallpapers"
+bags_dir="$state_dir/bags"
+provenance_dir="$state_dir/provenance"
+user_agent="${WALLPAPER_USER_AGENT:-ArchSetupWallpaper/2.0 (https://github.com/schrodinstein/Arch-Linux-hyprland-endeavour-fresh-setup)}"
 work_dir=""
+candidate_number=0
+
+active_provider=""
+selected_term=""
+candidate_url=""
+candidate_id=""
+candidate_title=""
+candidate_creator=""
+candidate_credit=""
+candidate_license=""
+candidate_license_url=""
+candidate_source_url=""
+candidate_delay=0
+wallpaper_path=""
+image_width=""
+image_height=""
 
 log() {
-  printf '[wallhaven-wallpaper] %s\n' "$*"
+  printf '[ml4w-wallpaper] %s\n' "$*"
+}
+
+warn() {
+  printf '[ml4w-wallpaper] WARN: %s\n' "$*" >&2
 }
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
-    printf '[wallhaven-wallpaper] missing required command: %s\n' "$1" >&2
+    printf '[ml4w-wallpaper] missing required command: %s\n' "$1" >&2
     exit 1
   }
 }
 
 sanitize() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]._-' '-' | sed -e 's/^-//' -e 's/-$//' | cut -c1-48
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -cs '[:alnum:]._-' '-' \
+    | sed -e 's/^-//' -e 's/-$//' \
+    | cut -c1-48
 }
 
-read_terms() {
-  [[ -f "$terms_file" ]] || {
-    printf '[wallhaven-wallpaper] search terms file not found: %s\n' "$terms_file" >&2
-    exit 1
-  }
-
-  mapfile -t terms < <(sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$terms_file")
-  (( ${#terms[@]} > 0 )) || {
-    printf '[wallhaven-wallpaper] no search terms found in: %s\n' "$terms_file" >&2
-    exit 1
-  }
+urlencode() {
+  jq -nr --arg value "$1" '$value | @uri'
 }
 
-build_search_url() {
-  local query encoded
-  query=$1
-  encoded=$(jq -nr --arg q "$query" '$q|@uri')
-  printf 'https://wallhaven.cc/api/v1/search?categories=%s&purity=%s&sorting=random&order=desc&atleast=%s&ratios=%s&q=%s' \
-    "$categories" "$purity" "$atleast" "$ratios" "$encoded"
-}
+read_terms_file() {
+  local path=$1
+  local -n output=$2
 
-fetch_candidate_url() {
-  local query api_url api_json
-  query=$1
-  api_url=$(build_search_url "$query")
-  api_json="$work_dir/search.json"
-
-  if ! wget -q -O "$api_json" "$api_url"; then
+  if [[ ! -f "$path" ]]; then
+    warn "search terms file not found: $path"
     return 1
   fi
 
-  jq -r '.data[]?.path // empty' "$api_json" | shuf -n 1
+  mapfile -t output < <(
+    sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$path" \
+      | awk '!seen[$0]++'
+  )
+  if (( ${#output[@]} == 0 )); then
+    warn "no search terms found in: $path"
+    return 1
+  fi
 }
 
-download_candidate() {
-  local image_url filename ext lower_ext safe_term stamp raw_path dest
-  image_url=$1
-  filename="${image_url##*/}"
-  ext="${filename##*.}"
-  lower_ext="${ext,,}"
-  safe_term=$(sanitize "$selected_term")
-  stamp=$(date +%Y%m%d%H%M%S)
+bag_next() {
+  local name=$1
+  shift
+  local bag_file="$bags_dir/$name.queue"
+  local hash_file="$bags_dir/$name.sha256"
+  local last_file="$bags_dir/$name.last"
+  local input_hash stored_hash="" picked tmp
 
-  raw_path="$work_dir/$filename"
-  wget -q -O "$raw_path" "$image_url"
+  (( $# > 0 )) || return 1
+  input_hash=$(printf '%s\0' "$@" | sha256sum)
+  input_hash=${input_hash%% *}
+  [[ -f "$hash_file" ]] && stored_hash=$(<"$hash_file")
 
-  case "$lower_ext" in
-    jpg|jpeg|png)
-      dest="$wallpaper_dir/wallhaven-${stamp}-${safe_term}-${filename}"
-      install -Dm644 "$raw_path" "$dest"
-      ;;
-    *)
-      dest="$wallpaper_dir/wallhaven-${stamp}-${safe_term}-${filename%.*}.png"
-      magick "${raw_path}[0]" "$dest"
-      chmod 0644 "$dest"
-      ;;
+  if [[ "$stored_hash" != "$input_hash" || ! -s "$bag_file" ]]; then
+    tmp=$(mktemp "$bags_dir/.${name}.queue.XXXXXX")
+    printf '%s\n' "$@" | shuf > "$tmp"
+
+    if [[ -s "$last_file" && $(wc -l < "$tmp") -gt 1 ]]; then
+      local last first
+      last=$(<"$last_file")
+      first=$(head -n 1 "$tmp")
+      if [[ "$first" == "$last" ]]; then
+        tail -n +2 "$tmp" > "$tmp.rotated"
+        printf '%s\n' "$first" >> "$tmp.rotated"
+        mv "$tmp.rotated" "$tmp"
+      fi
+    fi
+
+    mv "$tmp" "$bag_file"
+    printf '%s\n' "$input_hash" > "$hash_file"
+  fi
+
+  IFS= read -r picked < "$bag_file"
+  tmp=$(mktemp "$bags_dir/.${name}.queue.XXXXXX")
+  tail -n +2 "$bag_file" > "$tmp"
+  mv "$tmp" "$bag_file"
+  printf '%s\n' "$picked" > "$last_file"
+  printf '%s\n' "$picked"
+}
+
+next_term_for_provider() {
+  local provider=$1 path
+  local -a terms=()
+
+  case "$provider" in
+    wallhaven) path=$wallhaven_terms_file ;;
+    wikimedia) path=$wikimedia_terms_file ;;
+    nasa) path=$nasa_terms_file ;;
+    met|artic) path=$museum_terms_file ;;
+    *) return 1 ;;
   esac
 
-  printf '%s\n' "$dest"
+  read_terms_file "$path" terms || return 1
+  bag_next "terms-$provider" "${terms[@]}"
 }
 
-prune_old_wallhaven_files() {
+fetch_json() {
+  local url=$1 output=$2
+  shift 2
+  curl --fail --silent --show-error --location --retry 2 \
+    --connect-timeout 15 --max-time 45 --user-agent "$user_agent" \
+    "$@" --output "$output" "$url"
+}
+
+download_file() {
+  local url=$1 output=$2
+  shift 2
+  curl --fail --silent --show-error --location --retry 2 \
+    --connect-timeout 15 --max-time 90 --max-filesize "$max_bytes" \
+    --user-agent "$user_agent" "$@" --output "$output" "$url"
+}
+
+reset_candidate() {
+  candidate_url=""
+  candidate_id=""
+  candidate_title=""
+  candidate_creator=""
+  candidate_credit=""
+  candidate_license=""
+  candidate_license_url=""
+  candidate_source_url=""
+  candidate_delay=0
+}
+
+fetch_wallhaven_candidate() {
+  local encoded api_url api_json record
+  encoded=$(urlencode "$selected_term")
+  api_url="https://wallhaven.cc/api/v1/search?categories=$categories&purity=$purity&sorting=random&order=desc&atleast=$atleast&ratios=$ratios&q=$encoded"
+  api_json="$work_dir/wallhaven-search.json"
+  record="$work_dir/wallhaven-candidate.json"
+
+  fetch_json "$api_url" "$api_json" || return 1
+  jq -c \
+    --argjson min_width "$min_width" \
+    --argjson min_height "$min_height" \
+    --argjson min_ratio "$min_ratio" '
+      .data[]?
+      | select((.dimension_x // 0) >= $min_width)
+      | select((.dimension_y // 0) >= $min_height)
+      | select(((.dimension_x // 0) / (.dimension_y // 1)) >= $min_ratio)
+    ' "$api_json" | shuf -n 1 > "$record"
+  [[ -s "$record" ]] || return 1
+
+  candidate_url=$(jq -r '.path // empty' "$record")
+  candidate_id=$(jq -r '.id // empty' "$record")
+  candidate_title="Wallhaven $candidate_id"
+  candidate_creator=$(jq -r '.uploader.username // empty' "$record")
+  candidate_credit=$(jq -r '.source // empty' "$record")
+  candidate_license="Rights vary; see the image source page"
+  candidate_license_url="https://wallhaven.cc/rules"
+  candidate_source_url=$(jq -r '.url // empty' "$record")
+  [[ -n "$candidate_url" ]]
+}
+
+fetch_wikimedia_candidate() {
+  local encoded api_url api_json record search
+  search="$selected_term incategory:Featured_pictures_on_Wikimedia_Commons|Quality_images|Valued_images"
+  encoded=$(urlencode "$search")
+  api_url="https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=$encoded&gsrnamespace=6&gsrlimit=50&prop=imageinfo&iiprop=url%7Csize%7Cextmetadata&iiurlwidth=2560&iiextmetadatalanguage=en&iiextmetadatafilter=Artist%7CLicenseShortName%7CLicenseUrl%7CCredit%7CImageDescription&format=json&formatversion=2"
+  api_json="$work_dir/wikimedia-search.json"
+  record="$work_dir/wikimedia-candidate.json"
+
+  [[ -s "$api_json" ]] || fetch_json "$api_url" "$api_json" || return 1
+  jq -c \
+    --argjson min_width "$min_width" \
+    --argjson min_height "$min_height" \
+    --argjson min_ratio "$min_ratio" '
+      .query.pages[]?
+      | .imageinfo[0] as $image
+      | select(($image.width // 0) >= $min_width)
+      | select(($image.height // 0) >= $min_height)
+      | select((($image.width // 0) / ($image.height // 1)) >= $min_ratio)
+      | select(($image.extmetadata.LicenseShortName.value // "") != "")
+    ' "$api_json" | shuf -n 1 > "$record"
+  [[ -s "$record" ]] || return 1
+
+  candidate_url=$(jq -r '.imageinfo[0].thumburl // .imageinfo[0].url // empty' "$record")
+  candidate_id=$(jq -r '.pageid // empty' "$record")
+  candidate_title=$(jq -r '.title // empty | sub("^File:"; "")' "$record")
+  candidate_creator=$(jq -r '.imageinfo[0].extmetadata.Artist.value // empty' "$record")
+  candidate_credit=$(jq -r '.imageinfo[0].extmetadata.Credit.value // empty' "$record")
+  candidate_license=$(jq -r '.imageinfo[0].extmetadata.LicenseShortName.value // empty' "$record")
+  candidate_license_url=$(jq -r '.imageinfo[0].extmetadata.LicenseUrl.value // empty' "$record")
+  candidate_source_url=$(jq -r '.imageinfo[0].descriptionurl // empty' "$record")
+  [[ -n "$candidate_url" ]]
+}
+
+fetch_nasa_candidate() {
+  local encoded api_url api_json record asset_json asset_url encoded_id
+  encoded=$(urlencode "$selected_term")
+  api_url="https://images-api.nasa.gov/search?q=$encoded&media_type=image&page_size=100"
+  api_json="$work_dir/nasa-search.json"
+  record="$work_dir/nasa-candidate.json"
+  asset_json="$work_dir/nasa-assets.json"
+
+  [[ -s "$api_json" ]] || fetch_json "$api_url" "$api_json" || return 1
+  jq -c '
+    .collection.items[]?
+    | select(.data[0].nasa_id and .href)
+    | select((.data[0].copyright // "") == "")
+  ' "$api_json" \
+    | shuf -n 1 > "$record"
+  [[ -s "$record" ]] || return 1
+
+  asset_url=$(jq -r '.href // empty' "$record")
+  [[ -n "$asset_url" ]] || return 1
+  fetch_json "$asset_url" "$asset_json" || return 1
+  candidate_url=$(jq -r '
+    [ .[] | select(type == "string") | select(test("\\.(jpe?g|png)(\\?.*)?$"; "i")) ] as $images
+    | (([$images[] | select(test("~large\\."; "i"))]
+        + [$images[] | select(test("~orig\\."; "i"))]
+        + [$images[] | select(test("~medium\\."; "i"))]
+        + $images)[0] // empty)
+  ' "$asset_json")
+  candidate_url=${candidate_url/http:\/\/images-assets.nasa.gov/https:\/\/images-assets.nasa.gov}
+  candidate_id=$(jq -r '.data[0].nasa_id // empty' "$record")
+  candidate_title=$(jq -r '.data[0].title // empty' "$record")
+  candidate_creator=$(jq -r '.data[0].photographer // .data[0].secondary_creator // .data[0].center // "NASA"' "$record")
+  candidate_credit=$(jq -r '.data[0].center // "NASA"' "$record")
+  candidate_license="NASA media usage guidelines"
+  candidate_license_url="https://www.nasa.gov/nasa-brand-center/images-and-media/"
+  encoded_id=$(urlencode "$candidate_id")
+  candidate_source_url="https://images.nasa.gov/details/$encoded_id"
+  [[ -n "$candidate_url" ]]
+}
+
+fetch_artic_candidate() {
+  local encoded api_url api_json record iiif_url image_id
+  encoded=$(urlencode "$selected_term")
+  api_url="https://api.artic.edu/api/v1/artworks/search?q=$encoded&query%5Bterm%5D%5Bis_public_domain%5D=true&limit=100&fields=id,title,image_id,artist_display,is_public_domain,thumbnail"
+  api_json="$work_dir/artic-search.json"
+  record="$work_dir/artic-candidate.json"
+
+  [[ -s "$api_json" ]] || fetch_json "$api_url" "$api_json" \
+    --header="AIC-User-Agent: $user_agent" || return 1
+  jq -c \
+    --argjson min_width "$min_width" \
+    --argjson min_height "$min_height" \
+    --argjson min_ratio "$min_ratio" '
+      .data[]?
+      | select(.is_public_domain == true and .image_id)
+      | select((.thumbnail.width // 0) >= $min_width)
+      | select((.thumbnail.height // 0) >= $min_height)
+      | select(((.thumbnail.width // 0) / (.thumbnail.height // 1)) >= $min_ratio)
+    ' "$api_json" | shuf -n 1 > "$record"
+  [[ -s "$record" ]] || return 1
+
+  iiif_url=$(jq -r '.config.iiif_url // empty' "$api_json")
+  image_id=$(jq -r '.image_id // empty' "$record")
+  [[ -n "$iiif_url" && -n "$image_id" ]] || return 1
+  candidate_url="$iiif_url/$image_id/full/1686,/0/default.jpg"
+  candidate_id=$(jq -r '.id // empty' "$record")
+  candidate_title=$(jq -r '.title // empty' "$record")
+  candidate_creator=$(jq -r '.artist_display // empty' "$record")
+  candidate_credit="Art Institute of Chicago"
+  candidate_license="CC0 Public Domain Designation"
+  candidate_license_url="https://www.artic.edu/open-access/open-access-images"
+  candidate_source_url="https://www.artic.edu/artworks/$candidate_id"
+  candidate_delay=1
+}
+
+fetch_met_candidate() {
+  local encoded api_url api_json record object_json object_id
+  encoded=$(urlencode "$selected_term")
+  api_url="https://collectionapi.metmuseum.org/public/collection/v1.1/search?hasImages=true&isPublicDomain=true&q=$encoded&limit=100&offset=0"
+  api_json="$work_dir/met-search.json"
+  record="$work_dir/met-id.txt"
+  object_json="$work_dir/met-object.json"
+
+  [[ -s "$api_json" ]] || fetch_json "$api_url" "$api_json" || return 1
+  jq -r '.objectIDs[]? // empty' "$api_json" | shuf -n 1 > "$record"
+  [[ -s "$record" ]] || return 1
+  object_id=$(<"$record")
+  fetch_json "https://collectionapi.metmuseum.org/public/collection/v1/objects/$object_id" "$object_json" || return 1
+  [[ $(jq -r '.isPublicDomain // false' "$object_json") == true ]] || return 1
+
+  candidate_url=$(jq -r '.primaryImage // empty' "$object_json")
+  candidate_id=$(jq -r '.objectID // empty' "$object_json")
+  candidate_title=$(jq -r '.title // empty' "$object_json")
+  candidate_creator=$(jq -r '.artistDisplayName // empty' "$object_json")
+  candidate_credit=$(jq -r '.creditLine // empty' "$object_json")
+  candidate_license="CC0"
+  candidate_license_url="https://www.metmuseum.org/policies/image-resources"
+  candidate_source_url=$(jq -r '.objectURL // empty' "$object_json")
+  [[ -n "$candidate_url" ]]
+}
+
+fetch_candidate() {
+  case "$active_provider" in
+    wallhaven) fetch_wallhaven_candidate ;;
+    wikimedia) fetch_wikimedia_candidate ;;
+    nasa) fetch_nasa_candidate ;;
+    artic) fetch_artic_candidate ;;
+    met) fetch_met_candidate ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_candidate() {
+  local raw normalized dimensions safe_term safe_id stamp destination
+  candidate_number=$((candidate_number + 1))
+  raw="$work_dir/raw-$candidate_number"
+  normalized="$work_dir/normalized-$candidate_number.jpg"
+
+  (( candidate_delay == 0 )) || sleep "$candidate_delay"
+  local -a download_headers=()
+  if [[ "$active_provider" == "artic" ]]; then
+    download_headers+=(--header="AIC-User-Agent: $user_agent")
+  fi
+  if ! download_file "$candidate_url" "$raw" "${download_headers[@]}"; then
+    warn "$active_provider download failed for '$selected_term'"
+    return 1
+  fi
+
+  if ! magick "${raw}[0]" -auto-orient -strip -colorspace sRGB -quality 92 "$normalized" 2>/dev/null; then
+    warn "$active_provider returned an unreadable image for '$selected_term'"
+    return 1
+  fi
+
+  dimensions=$(magick identify -format '%w %h' "$normalized" 2>/dev/null) || return 1
+  read -r image_width image_height <<< "$dimensions"
+  if (( image_width < min_width || image_height < min_height )) \
+    || ! awk -v width="$image_width" -v height="$image_height" -v ratio="$min_ratio" \
+      'BEGIN { exit !(height > 0 && width / height >= ratio) }'; then
+    warn "$active_provider image rejected at ${image_width}x${image_height} for '$selected_term'"
+    return 1
+  fi
+
+  safe_term=$(sanitize "$selected_term")
+  safe_id=$(sanitize "$candidate_id")
+  [[ -n "$safe_term" ]] || safe_term="untitled"
+  [[ -n "$safe_id" ]] || safe_id="image-$RANDOM"
+  stamp=$(date +%Y%m%d%H%M%S)
+  destination="$wallpaper_dir/arch-setup-wallpaper-$active_provider-$stamp-$safe_term-$safe_id.jpg"
+  install -Dm644 "$normalized" "$destination"
+  wallpaper_path=$destination
+}
+
+write_provenance() {
+  local basename metadata downloaded_at
+  basename=${wallpaper_path##*/}
+  metadata="$provenance_dir/$basename.json"
+  downloaded_at=$(date --iso-8601=seconds)
+
+  jq -n \
+    --arg file "$basename" \
+    --arg provider "$active_provider" \
+    --arg query "$selected_term" \
+    --arg id "$candidate_id" \
+    --arg title "$candidate_title" \
+    --arg creator "$candidate_creator" \
+    --arg credit "$candidate_credit" \
+    --arg license "$candidate_license" \
+    --arg license_url "$candidate_license_url" \
+    --arg source_url "$candidate_source_url" \
+    --arg download_url "$candidate_url" \
+    --arg downloaded_at "$downloaded_at" \
+    --argjson width "$image_width" \
+    --argjson height "$image_height" '
+      {
+        schema_version: 1,
+        file: $file,
+        provider: $provider,
+        query: $query,
+        provider_id: $id,
+        title: $title,
+        creator: $creator,
+        credit: $credit,
+        license: $license,
+        license_url: $license_url,
+        source_url: $source_url,
+        download_url: $download_url,
+        downloaded_at: $downloaded_at,
+        width: $width,
+        height: $height
+      }
+    ' > "$metadata"
+}
+
+try_provider() {
+  active_provider=$1
+  if ! selected_term=$(next_term_for_provider "$active_provider"); then
+    return 1
+  fi
+
+  log "trying $active_provider for '$selected_term'"
+  local attempt
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    reset_candidate
+    if fetch_candidate && normalize_candidate; then
+      write_provenance
+      return 0
+    fi
+  done
+
+  warn "$active_provider found no suitable landscape for '$selected_term' after $max_attempts attempts"
+  return 1
+}
+
+parse_provider_pool() {
+  local provider
+  mapfile -t provider_pool < <(
+    printf '%s\n' "$provider_pool_spec" \
+      | tr ',' '\n' \
+      | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d'
+  )
+
+  local -a valid=()
+  for provider in "${provider_pool[@]}"; do
+    case "$provider" in
+      wallhaven|wikimedia|nasa|met|artic) valid+=("$provider") ;;
+      *) warn "ignoring unknown wallpaper provider: $provider" ;;
+    esac
+  done
+  provider_pool=("${valid[@]}")
+  (( ${#provider_pool[@]} > 0 )) || {
+    warn "WALLPAPER_PROVIDER_POOL contains no supported providers"
+    return 1
+  }
+}
+
+prune_old_downloads() {
   (( keep_count > 0 )) || return 0
+  local -a records=()
+  local record path basename
 
-  find "$wallpaper_dir" -maxdepth 1 -type f -name 'wallhaven-*' -printf '%T@ %p\n' \
-    | sort -rn \
-    | tail -n +"$((keep_count + 1))" \
-    | cut -d ' ' -f2- \
-    | xargs -r rm -f
+  mapfile -d '' -t records < <(
+    find "$wallpaper_dir" -maxdepth 1 -type f \
+      \( -name 'arch-setup-wallpaper-*' -o -name 'wallhaven-*' \) \
+      -printf '%T@\t%p\0' | sort -z -nr
+  )
+
+  for record in "${records[@]:keep_count}"; do
+    path=${record#*$'\t'}
+    basename=${path##*/}
+    rm -f -- "$path" "$provenance_dir/$basename.json"
+  done
 }
 
+need_cmd awk
+need_cmd curl
+need_cmd flock
 need_cmd jq
-need_cmd wget
-need_cmd shuf
 need_cmd magick
-read_terms
+need_cmd sha256sum
+need_cmd shuf
+parse_provider_pool
 
-mkdir -p "$cache_dir" "$wallpaper_dir"
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  log "another Wallhaven wallpaper run is already active; skipping"
+mkdir -p "$cache_dir" "$state_dir" "$bags_dir" "$provenance_dir" "$wallpaper_dir"
+exec 9> "$state_dir/run.lock"
+if ! flock -n 9; then
+  log "another wallpaper refresh is already active; skipping"
   exit 0
 fi
-trap '[[ -n "${work_dir:-}" ]] && rm -rf "$work_dir"; rm -rf "$lock_dir"' EXIT
 
 work_dir=$(mktemp -d "$cache_dir/run.XXXXXX")
-selected_term=""
-image_url=""
+trap '[[ -n "${work_dir:-}" ]] && rm -rf "$work_dir"' EXIT
 
-for _ in {1..10}; do
-  selected_term=$(printf '%s\n' "${terms[@]}" | shuf -n 1)
-  image_url=$(fetch_candidate_url "$selected_term" || true)
-  [[ -n "$image_url" ]] && break
+primary_provider=$(bag_next providers "${provider_pool[@]}")
+providers_to_try=("$primary_provider")
+mapfile -t fallback_providers < <(
+  printf '%s\n' "${provider_pool[@]}" \
+    | awk -v primary="$primary_provider" '$0 != primary && !seen[$0]++' \
+    | shuf
+)
+providers_to_try+=("${fallback_providers[@]}")
+
+for provider in "${providers_to_try[@]}"; do
+  if try_provider "$provider"; then
+    break
+  fi
 done
 
-if [[ -z "$image_url" ]]; then
-  printf '[wallhaven-wallpaper] no Wallhaven result found after retries\n' >&2
+if [[ -z "$wallpaper_path" ]]; then
+  printf '[ml4w-wallpaper] no provider returned a suitable landscape image\n' >&2
   exit 1
 fi
 
-wallpaper_path=$(download_candidate "$image_url")
-prune_old_wallhaven_files
+prune_old_downloads
 
 mkdir -p "$HOME/.config/ml4w/settings"
 printf '%s\n' "$wallpaper_dir" > "$HOME/.config/ml4w/settings/wallpaper-folder"
 printf '1200\n' > "$HOME/.config/ml4w/settings/wallpaper-automation"
 
-if [[ -z "${WAYLAND_DISPLAY:-}" && -z "${DISPLAY:-}" ]]; then
-  log "downloaded $wallpaper_path for '$selected_term'; no graphical session available to apply it"
+candidate_title=${candidate_title//$'\n'/ }
+if [[ "${WALLPAPER_APPLY:-1}" != "1" || ( -z "${WAYLAND_DISPLAY:-}" && -z "${DISPLAY:-}" ) ]]; then
+  log "downloaded $wallpaper_path from $active_provider for '$selected_term': $candidate_title"
   exit 0
 fi
 
 if [[ -x "$HOME/.config/ml4w/scripts/ml4w-wallpaper" ]]; then
   "$HOME/.config/ml4w/scripts/ml4w-wallpaper" "$wallpaper_path" --notifications false
-  log "set $wallpaper_path from search term '$selected_term'"
+  log "set $wallpaper_path from $active_provider for '$selected_term': $candidate_title"
 else
-  log "downloaded $wallpaper_path for '$selected_term'; ML4W wallpaper script not found"
+  log "downloaded $wallpaper_path; ML4W wallpaper script not found"
 fi

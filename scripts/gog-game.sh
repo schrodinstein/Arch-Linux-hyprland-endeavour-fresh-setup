@@ -22,6 +22,7 @@ Install options:
   --slug SLUG          Override detected game slug.
   --name NAME          Override detected display name.
   --dest DIR           Override install destination.
+  --addon-to SLUG      Install DLC/add-on content into a tracked base game.
   --interactive        Use MojoSetup's terminal UI instead of unattended flags.
   --dry-run            Show what would happen without installing.
   --force              Allow installing into an existing directory/state slot.
@@ -55,6 +56,69 @@ state_dir_for_slug() {
   printf '%s/%s\n' "$GOG_STATE_DIR" "$slug"
 }
 
+validate_slug() {
+  local slug=$1
+  [[ "$slug" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "invalid slug: $slug"
+  [[ "$slug" != "." && "$slug" != ".." ]] || die "invalid slug: $slug"
+}
+
+normalize_install_dir() {
+  local install_dir=$1
+  [[ "$install_dir" == /* ]] || die "install destination must be an absolute path: $install_dir"
+
+  install_dir=$(realpath -m -- "$install_dir")
+  case "$install_dir" in
+    /|"$HOME"|"$HOME/Games"|"$GOG_GAMES_DIR")
+      die "refusing unsafe install destination: $install_dir"
+      ;;
+  esac
+  printf '%s\n' "$install_dir"
+}
+
+manifest_field() {
+  local slug=$1
+  local field=$2
+  local manifest
+  manifest=$(manifest_path "$slug")
+  [[ -r "$manifest" ]] || return 1
+
+  (
+    GOG_SLUG=""
+    GOG_NAME=""
+    GOG_INSTALL_DIR=""
+    GOG_PARENT_SLUG=""
+    GOG_DEPENDS=""
+    GOG_UNINSTALLER=""
+    # shellcheck disable=SC1090
+    . "$manifest"
+    case "$field" in
+      GOG_SLUG) printf '%s\n' "$GOG_SLUG" ;;
+      GOG_NAME) printf '%s\n' "$GOG_NAME" ;;
+      GOG_INSTALL_DIR) printf '%s\n' "$GOG_INSTALL_DIR" ;;
+      GOG_PARENT_SLUG) printf '%s\n' "$GOG_PARENT_SLUG" ;;
+      GOG_DEPENDS) printf '%s\n' "$GOG_DEPENDS" ;;
+      GOG_UNINSTALLER) printf '%s\n' "$GOG_UNINSTALLER" ;;
+      *) return 1 ;;
+    esac
+  )
+}
+
+find_tracked_slug_by_name() {
+  local expected_name=$1
+  local manifest slug name
+  [[ -d "$GOG_STATE_DIR" ]] || return 1
+
+  while IFS= read -r manifest; do
+    slug=$(basename -- "$(dirname -- "$manifest")")
+    name=$(manifest_field "$slug" GOG_NAME || true)
+    if [[ "$name" == "$expected_name" ]]; then
+      printf '%s\n' "$slug"
+      return 0
+    fi
+  done < <(find "$GOG_STATE_DIR" -mindepth 2 -maxdepth 2 -name manifest.env -print | sort)
+  return 1
+}
+
 clean_display_name() {
   local name=$1
   name="${name% (GOG.com)}"
@@ -73,7 +137,7 @@ slugify() {
 detect_installer_label() {
   local installer=$1
   local label
-  label=$(sed -n 's/^label="\([^"]*\)".*/\1/p' "$installer" | sed -n '1p')
+  label=$(head -n 80 -- "$installer" | sed -n 's/^label="\([^"]*\)".*/\1/p' | sed -n '1p')
   if [[ -n "$label" ]]; then
     clean_display_name "$label"
     return 0
@@ -83,6 +147,14 @@ detect_installer_label() {
   base=$(basename -- "$installer")
   base=${base%.sh}
   printf '%s\n' "$base"
+}
+
+detect_installer_dependency() {
+  local installer=$1
+  local config
+  command -v unzip >/dev/null 2>&1 || return 0
+  config=$(unzip -p "$installer" scripts/config.lua 2>/dev/null || true)
+  sed -n 's/^[[:space:]]*local depends[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$config" | sed -n '1p'
 }
 
 is_gog_mojosetup_installer() {
@@ -108,6 +180,113 @@ snapshot_files() {
   done | sort -u
 }
 
+snapshot_dirs() {
+  local path=$1
+  [[ -d "$path" ]] || return 0
+  find "$path" -xdev -type d -print | sort -u
+}
+
+snapshot_uninstallers() {
+  local install_dir=$1
+  [[ -d "$install_dir" ]] || return 0
+  find "$install_dir" -maxdepth 3 -type f -iname 'uninstall*.sh' -print | sort -u
+}
+
+prepare_addon_backup() {
+  local installer=$1
+  local install_dir=$2
+  local state_dir=$3
+  local archive_files="$state_dir/archive-files.txt"
+  local overwritten_files="$state_dir/overwritten-files.txt"
+  local backup_dir="$state_dir/backup"
+  local listing entry relative source backup
+
+  need_cmd unzip
+  listing=$(unzip -Z1 "$installer" 2>/dev/null || true)
+  [[ -n "$listing" ]] || die "could not inspect add-on archive: $installer"
+  : > "$archive_files"
+  : > "$overwritten_files"
+
+  while IFS= read -r entry; do
+    [[ "$entry" == data/noarch/* ]] || continue
+    relative=${entry#data/noarch/}
+    [[ -n "$relative" && "$relative" != */ ]] || continue
+    case "/$relative/" in
+      */../*|*/./*) die "unsafe path in add-on archive: $relative" ;;
+    esac
+
+    printf '%s\n' "$relative" >> "$archive_files"
+    source="$install_dir/$relative"
+    if [[ -e "$source" || -L "$source" ]]; then
+      [[ ! -d "$source" || -L "$source" ]] || die "add-on file would replace a directory: $source"
+      backup="$backup_dir/$relative"
+      mkdir -p -- "$(dirname -- "$backup")"
+      cp -a -- "$source" "$backup"
+      printf '%s\n' "$relative" >> "$overwritten_files"
+    fi
+  done <<< "$listing"
+}
+
+rollback_addon_files() {
+  local install_dir=$1
+  local state_dir=$2
+  local created_file=$3
+  local created_dirs_file=$4
+  local overwritten_files="$state_dir/overwritten-files.txt"
+  local backup_dir="$state_dir/backup"
+  local path relative target backup
+
+  if [[ -r "$created_file" ]]; then
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+      case "$path" in
+        "$install_dir"/*)
+          if [[ -f "$path" || -L "$path" ]]; then
+            log "removing add-on file: $path"
+            rm -f -- "$path"
+          fi
+          ;;
+      esac
+    done < "$created_file"
+  fi
+
+  if [[ -r "$overwritten_files" ]]; then
+    while IFS= read -r relative; do
+      [[ -n "$relative" ]] || continue
+      target="$install_dir/$relative"
+      backup="$backup_dir/$relative"
+      [[ -e "$backup" || -L "$backup" ]] || die "missing add-on backup: $backup"
+      [[ ! -d "$target" || -L "$target" ]] || die "refusing to replace directory during add-on rollback: $target"
+      mkdir -p -- "$(dirname -- "$target")"
+      rm -f -- "$target"
+      cp -a -- "$backup" "$target"
+      log "restored pre-add-on file: $target"
+    done < "$overwritten_files"
+  fi
+
+  if [[ -r "$created_dirs_file" ]]; then
+    while IFS= read -r path; do
+      case "$path" in
+        "$install_dir"/*) rmdir -- "$path" 2>/dev/null || true ;;
+      esac
+    done < <(sort -r "$created_dirs_file")
+  fi
+}
+
+find_child_addons() {
+  local parent_slug=$1
+  local manifest child_slug child_parent
+  [[ -d "$GOG_STATE_DIR" ]] || return 0
+
+  while IFS= read -r manifest; do
+    child_slug=$(basename -- "$(dirname -- "$manifest")")
+    child_parent=$(manifest_field "$child_slug" GOG_PARENT_SLUG || true)
+    if [[ "$child_parent" == "$parent_slug" ]]; then
+      printf '%s\n' "$child_slug"
+    fi
+  done < <(find "$GOG_STATE_DIR" -mindepth 2 -maxdepth 2 -name manifest.env -print | sort)
+}
+
 write_manifest() {
   local slug=$1
   local name=$2
@@ -115,6 +294,9 @@ write_manifest() {
   local install_dir=$4
   local state_dir=$5
   local checksum=$6
+  local parent_slug=$7
+  local dependency=$8
+  local uninstaller=$9
 
   mkdir -p "$state_dir"
   {
@@ -124,6 +306,9 @@ write_manifest() {
     printf 'GOG_INSTALL_DIR=%s\n' "$(shell_quote "$install_dir")"
     printf 'GOG_INSTALLER_SHA256=%s\n' "$(shell_quote "$checksum")"
     printf 'GOG_INSTALLED_AT=%s\n' "$(shell_quote "$(date -Iseconds)")"
+    printf 'GOG_PARENT_SLUG=%s\n' "$(shell_quote "$parent_slug")"
+    printf 'GOG_DEPENDS=%s\n' "$(shell_quote "$dependency")"
+    printf 'GOG_UNINSTALLER=%s\n' "$(shell_quote "$uninstaller")"
   } > "$state_dir/manifest.env"
 }
 
@@ -132,6 +317,9 @@ load_manifest() {
   local manifest
   manifest=$(manifest_path "$slug")
   [[ -r "$manifest" ]] || die "no installed game metadata for slug: $slug"
+  GOG_PARENT_SLUG=""
+  GOG_DEPENDS=""
+  GOG_UNINSTALLER=""
   # shellcheck disable=SC1090
   . "$manifest"
 }
@@ -191,6 +379,9 @@ install_game() {
   local name=""
   local slug=""
   local install_dir=""
+  local parent_slug=""
+  local dependency=""
+  local destination_set=0
   local interactive=0
   local dry_run=0
   local force=0
@@ -207,6 +398,11 @@ install_game() {
         ;;
       --dest)
         install_dir="${2:?missing destination}"
+        destination_set=1
+        shift 2
+        ;;
+      --addon-to)
+        parent_slug="${2:?missing parent slug}"
         shift 2
         ;;
       --interactive)
@@ -249,20 +445,55 @@ install_game() {
     slug=$(slugify "$name")
   fi
   [[ -n "$slug" ]] || die "could not derive a usable slug"
+  validate_slug "$slug"
 
-  if [[ -z "$install_dir" ]]; then
-    install_dir=$(default_install_dir "$slug")
+  dependency=$(detect_installer_dependency "$installer")
+  if [[ -z "$parent_slug" && -n "$dependency" ]]; then
+    if ! parent_slug=$(find_tracked_slug_by_name "$dependency"); then
+      die "add-on requires tracked base game '$dependency'; install it first or use --addon-to SLUG"
+    fi
   fi
 
+  local parent_name="" parent_install_dir=""
+  if [[ -n "$parent_slug" ]]; then
+    validate_slug "$parent_slug"
+    parent_name=$(manifest_field "$parent_slug" GOG_NAME) || die "base game is not tracked: $parent_slug"
+    parent_install_dir=$(manifest_field "$parent_slug" GOG_INSTALL_DIR) || die "base game has no install destination: $parent_slug"
+    parent_install_dir=$(normalize_install_dir "$parent_install_dir")
+    [[ -d "$parent_install_dir" ]] || die "base game install directory is missing: $parent_install_dir"
+
+    if [[ -n "$dependency" && "$parent_name" != "$dependency" ]]; then
+      die "add-on requires '$dependency', but '$parent_slug' tracks '$parent_name'"
+    fi
+    if [[ "$destination_set" == "1" ]]; then
+      install_dir=$(normalize_install_dir "$install_dir")
+      [[ "$install_dir" == "$parent_install_dir" ]] || die "add-on destination must match its base game: $parent_install_dir"
+    fi
+    install_dir=$parent_install_dir
+  elif [[ -z "$install_dir" ]]; then
+    install_dir=$(default_install_dir "$slug")
+  fi
+  install_dir=$(normalize_install_dir "$install_dir")
+
   local state_dir checksum before after created
+  local before_dirs after_dirs created_dirs
+  local before_uninstallers after_uninstallers created_uninstallers uninstaller=""
   state_dir=$(state_dir_for_slug "$slug")
-  checksum=$(installer_sha256 "$installer")
   before="$state_dir/preinstall-files.txt"
   after="$state_dir/postinstall-files.txt"
   created="$state_dir/created-files.txt"
+  before_dirs="$state_dir/preinstall-dirs.txt"
+  after_dirs="$state_dir/postinstall-dirs.txt"
+  created_dirs="$state_dir/created-dirs.txt"
+  before_uninstallers="$state_dir/preinstall-uninstallers.txt"
+  after_uninstallers="$state_dir/postinstall-uninstallers.txt"
+  created_uninstallers="$state_dir/created-uninstallers.txt"
 
   log "name: $name"
   log "slug: $slug"
+  if [[ -n "$parent_slug" ]]; then
+    log "add-on for: $parent_name ($parent_slug)"
+  fi
   log "installer: $installer"
   log "install dir: $install_dir"
   log "metadata dir: $state_dir"
@@ -278,28 +509,50 @@ install_game() {
   fi
 
   ensure_user
+  checksum=$(installer_sha256 "$installer")
 
   if [[ "$force" != "1" ]]; then
     [[ ! -e "$state_dir" ]] || die "metadata already exists for slug '$slug'; use --force to replace metadata"
-    if [[ -d "$install_dir" ]]; then
+    if [[ -z "$parent_slug" && -d "$install_dir" ]]; then
       if find "$install_dir" -mindepth 1 -print -quit | grep -q .; then
         die "install directory is not empty: $install_dir"
       fi
-    elif [[ -e "$install_dir" ]]; then
+    elif [[ -z "$parent_slug" && -e "$install_dir" && ! -d "$install_dir" ]]; then
       die "install path exists and is not a directory: $install_dir"
     fi
   fi
 
   mkdir -p "$state_dir" "$(dirname -- "$install_dir")"
 
+  if [[ -n "$parent_slug" ]]; then
+    prepare_addon_backup "$installer" "$install_dir" "$state_dir"
+  fi
+
   cleanup_partial_metadata() {
     local status=$?
-    if [[ "$status" != "0" && ! -f "$state_dir/manifest.env" ]]; then
-      warn "removing incomplete metadata for failed install: $state_dir"
-      rm -f -- "$before" "$after" "$created"
-      rmdir -- "$state_dir" 2>/dev/null || true
-    fi
     trap - RETURN
+    if [[ "$status" != "0" && ! -f "$state_dir/manifest.env" ]]; then
+      if [[ -n "$parent_slug" ]]; then
+        warn "add-on install failed; attempting to restore the base game"
+        snapshot_files \
+          "$install_dir" \
+          "$XDG_DATA_HOME/applications" \
+          "$XDG_DATA_HOME/icons" \
+          "$HOME/Desktop" > "$after" || true
+        comm -13 "$before" "$after" > "$created" || true
+        snapshot_dirs "$install_dir" > "$after_dirs" || true
+        comm -13 "$before_dirs" "$after_dirs" > "$created_dirs" || true
+        if rollback_addon_files "$install_dir" "$state_dir" "$created" "$created_dirs"; then
+          rm -rf -- "$state_dir"
+        else
+          warn "automatic rollback was incomplete; recovery data remains in: $state_dir"
+        fi
+      else
+        warn "removing incomplete metadata for failed install: $state_dir"
+        rm -f -- "$before" "$after" "$created" "$before_dirs" "$after_dirs" "$created_dirs"
+        rmdir -- "$state_dir" 2>/dev/null || true
+      fi
+    fi
     return "$status"
   }
   trap cleanup_partial_metadata RETURN
@@ -309,6 +562,8 @@ install_game() {
     "$XDG_DATA_HOME/applications" \
     "$XDG_DATA_HOME/icons" \
     "$HOME/Desktop" > "$before"
+  snapshot_dirs "$install_dir" > "$before_dirs"
+  snapshot_uninstallers "$install_dir" > "$before_uninstallers"
 
   log "running GOG installer"
   run_installer "$installer" "$install_dir" "$interactive"
@@ -319,8 +574,21 @@ install_game() {
     "$XDG_DATA_HOME/icons" \
     "$HOME/Desktop" > "$after"
   comm -13 "$before" "$after" > "$created" || true
+  snapshot_dirs "$install_dir" > "$after_dirs"
+  comm -13 "$before_dirs" "$after_dirs" > "$created_dirs" || true
+  snapshot_uninstallers "$install_dir" > "$after_uninstallers"
+  comm -13 "$before_uninstallers" "$after_uninstallers" > "$created_uninstallers" || true
 
-  write_manifest "$slug" "$name" "$installer" "$install_dir" "$state_dir" "$checksum"
+  if [[ -z "$parent_slug" ]]; then
+    uninstaller=$(sed -n '1p' "$created_uninstallers")
+    if [[ -z "$uninstaller" ]]; then
+      uninstaller=$(find_uninstaller "$install_dir" || true)
+    fi
+  fi
+
+  write_manifest \
+    "$slug" "$name" "$installer" "$install_dir" "$state_dir" "$checksum" \
+    "$parent_slug" "$dependency" "$uninstaller"
 
   log "installed: $name"
   log "uninstall with: $ARCH_SETUP_ROOT/scripts/gog-game.sh uninstall $slug"
@@ -335,10 +603,15 @@ list_games() {
 
   local manifest found=0
   while IFS= read -r manifest; do
+    GOG_PARENT_SLUG=""
     # shellcheck disable=SC1090
     . "$manifest"
     printf '%-28s %s\n' "$GOG_SLUG" "$GOG_INSTALL_DIR"
-    printf '  %s\n' "$GOG_NAME"
+    if [[ -n "$GOG_PARENT_SLUG" ]]; then
+      printf '  %s [add-on to %s]\n' "$GOG_NAME" "$GOG_PARENT_SLUG"
+    else
+      printf '  %s\n' "$GOG_NAME"
+    fi
     found=1
   done < <(find "$GOG_STATE_DIR" -mindepth 2 -maxdepth 2 -name manifest.env -print | sort)
 
@@ -427,15 +700,47 @@ uninstall_game() {
   done
 
   [[ -n "$slug" ]] || die "missing slug"
+  validate_slug "$slug"
   load_manifest "$slug"
+  GOG_INSTALL_DIR=$(normalize_install_dir "$GOG_INSTALL_DIR")
+
+  local -a child_addons=()
+  if [[ -z "$GOG_PARENT_SLUG" ]]; then
+    mapfile -t child_addons < <(find_child_addons "$slug")
+    if (( ${#child_addons[@]} > 0 )); then
+      die "uninstall add-ons first: ${child_addons[*]}"
+    fi
+  fi
+
   confirm_uninstall "$slug" "$yes"
 
   local state_dir created_file uninstaller uninstall_failed=0
   state_dir=$(state_dir_for_slug "$slug")
   created_file="$state_dir/created-files.txt"
 
+  if [[ -n "$GOG_PARENT_SLUG" ]]; then
+    if [[ "$keep_install_dir" != "1" ]]; then
+      log "rolling back add-on files from: $GOG_INSTALL_DIR"
+      rollback_addon_files "$GOG_INSTALL_DIR" "$state_dir" "$created_file" "$state_dir/created-dirs.txt"
+    fi
+    remove_tracked_files "$created_file"
+    rm -rf -- "$state_dir"
+    log "uninstalled add-on metadata for: $slug"
+    return 0
+  fi
+
   if [[ "$keep_install_dir" != "1" ]]; then
-    uninstaller=$(find_uninstaller "$GOG_INSTALL_DIR" || true)
+    uninstaller=$GOG_UNINSTALLER
+    if [[ -n "$uninstaller" ]]; then
+      case "$uninstaller" in
+        "$GOG_INSTALL_DIR"/*) ;;
+        *) die "tracked uninstaller is outside the game directory: $uninstaller" ;;
+      esac
+      [[ -f "$uninstaller" ]] || uninstaller=""
+    fi
+    if [[ -z "$uninstaller" ]]; then
+      uninstaller=$(find_uninstaller "$GOG_INSTALL_DIR" || true)
+    fi
     if [[ -n "$uninstaller" ]]; then
       log "running bundled uninstaller: $uninstaller"
       if ! MOJOSETUP_UI="${MOJOSETUP_UI:-ncurses}" MOJOSETUP_NOTERMSPAWN=1 sh "$uninstaller"; then

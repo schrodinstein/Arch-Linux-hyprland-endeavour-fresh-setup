@@ -1,5 +1,5 @@
 [Unit]
-Description=Fetch a new Wallhaven wallpaper every 20 minutes
+Description=Fetch a new multi-source wallpaper every 20 minutes
 
 [Timer]
 OnBootSec=5min

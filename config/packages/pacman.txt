@@ -48,3 +48,12 @@ xdg-desktop-portal-gtk
 xdg-desktop-portal-hyprland
 xdg-utils
 xdotool
+
+# Native office and PDF tools
+desktop-file-utils
+fontconfig
+okular
+pdfarranger
+qpdf
+qt6-wayland
+shared-mime-info

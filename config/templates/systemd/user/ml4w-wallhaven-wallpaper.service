@@ -1,6 +1,10 @@
 [Unit]
-Description=Fetch and set a random Wallhaven wallpaper
-Documentation=https://github.com/macearl/Wallhaven-Downloader
+Description=Fetch and set a fair multi-source random wallpaper
+Documentation=https://github.com/schrodinstein/Arch-Linux-hyprland-endeavour-fresh-setup \
+              https://commons.wikimedia.org/wiki/Commons:API \
+              https://images.nasa.gov/docs/images.nasa.gov_api_docs.pdf \
+              https://metmuseum.github.io/ \
+              https://api.artic.edu/docs/
 
 [Service]
 Type=oneshot
