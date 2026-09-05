@@ -1,0 +1,6 @@
+[Unit]
+Description=Refresh tmux colors from the ML4W palette
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/tmux-ml4w-theme --apply

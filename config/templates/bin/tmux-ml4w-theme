@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+palette=${ML4W_COLORS_FILE:-$config_home/ml4w/colors/colors.json}
+theme_dir=$config_home/tmux
+theme_file=$theme_dir/theme.conf
+
+read_color() {
+  local key=$1
+  local fallback=$2
+  local value=""
+
+  if [[ -r "$palette" ]] && command -v jq >/dev/null 2>&1; then
+    value=$(jq -er --arg key "$key" '.[$key] // empty' "$palette" 2>/dev/null || true)
+  fi
+
+  if [[ "$value" =~ ^#[0-9a-fA-F]{6}$ ]]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$fallback"
+  fi
+}
+
+background=$(read_color background '#111318')
+surface=$(read_color surface '#111318')
+surface_container=$(read_color surface_container '#1e2025')
+on_surface=$(read_color on_surface '#e3e2e9')
+on_surface_variant=$(read_color on_surface_variant '#c7c5d0')
+outline=$(read_color outline '#91909a')
+outline_variant=$(read_color outline_variant '#46464f')
+primary=$(read_color primary '#b7c4ff')
+on_primary=$(read_color on_primary '#14265c')
+secondary=$(read_color secondary '#c1c6dc')
+on_secondary=$(read_color on_secondary '#2a3042')
+error=$(read_color error '#ffb4ab')
+
+mkdir -p "$theme_dir"
+tmp=$(mktemp "$theme_dir/.theme.conf.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+
+cat > "$tmp" <<EOF
+# Generated from the active ML4W palette by tmux-ml4w-theme.
+set -g status-style "bg=$surface,fg=$on_surface"
+set -g status-left "#[bg=$surface,fg=$error,bold]#{?client_prefix, PREFIX ,}#[bg=$primary,fg=$on_primary,bold] #S #[bg=$surface,fg=$primary,nobold]"
+setw -g window-status-separator ""
+setw -g window-status-format "#[bg=$surface,fg=$on_surface_variant]  #I:#W#{?window_flags, #F,}  "
+setw -g window-status-current-format "#[bg=$surface,fg=$secondary]#[bg=$secondary,fg=$on_secondary,bold] #I:#W #[bg=$surface,fg=$secondary,nobold]"
+setw -g window-status-activity-style "fg=$error,bold"
+setw -g window-status-bell-style "fg=$error,bold"
+set -g status-right "#[fg=$error,bold]#{?pane_synchronized, SYNC ,}#[fg=$on_surface_variant,nobold] #{b:pane_current_path} #[fg=$outline]· #H #[fg=$primary,bold] %H:%M "
+set -g pane-border-style "fg=$outline_variant"
+set -g pane-active-border-style "fg=$primary"
+set -g message-style "bg=$primary,fg=$on_primary,bold"
+set -g message-command-style "bg=$surface_container,fg=$on_surface"
+setw -g mode-style "bg=$primary,fg=$on_primary,bold"
+set -g popup-style "bg=$background,fg=$on_surface"
+set -g popup-border-style "fg=$primary"
+set -g menu-style "bg=$background,fg=$on_surface"
+set -g menu-selected-style "bg=$primary,fg=$on_primary,bold"
+set -g menu-border-style "fg=$primary"
+setw -g clock-mode-colour "$primary"
+EOF
+
+chmod 0644 "$tmp"
+mv -f "$tmp" "$theme_file"
+trap - EXIT
+
+if [[ "${1:-}" == "--apply" ]] && command -v tmux >/dev/null 2>&1; then
+  if tmux list-sessions >/dev/null 2>&1; then
+    tmux source-file "$theme_file"
+  fi
+fi

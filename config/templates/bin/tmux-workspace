@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+session=${1:-main}
+directory=${2:-$HOME}
+
+if [[ ! "$session" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+  printf 'invalid tmux session name: %s\n' "$session" >&2
+  exit 2
+fi
+
+if [[ ! -d "$directory" ]]; then
+  printf 'missing tmux start directory: %s\n' "$directory" >&2
+  exit 2
+fi
+
+if [[ -n "${TMUX:-}" ]]; then
+  if ! tmux has-session -t "=$session" 2>/dev/null; then
+    tmux new-session -d -s "$session" -c "$directory"
+  fi
+  exec tmux switch-client -t "=$session"
+fi
+
+exec tmux new-session -A -s "$session" -c "$directory"

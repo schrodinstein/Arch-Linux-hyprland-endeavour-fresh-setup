@@ -45,6 +45,66 @@ enable_user_service() {
   fi
 }
 
+configure_tailscale_firewall() {
+  local mode=${ARCH_SETUP_TAILSCALE_FIREWALL_MODE:-nftables}
+  local override=/etc/systemd/system/tailscaled.service.d/arch-setup.conf
+  local tmp
+
+  case "$mode" in
+    auto|iptables|nftables) ;;
+    *) die "invalid ARCH_SETUP_TAILSCALE_FIREWALL_MODE: $mode" ;;
+  esac
+
+  tmp=$(mktemp)
+  printf '[Service]\nEnvironment=TS_DEBUG_FIREWALL_MODE=%s\n' "$mode" > "$tmp"
+
+  log "configuring Tailscale firewall mode: $mode"
+  if ! sudo install -Dm644 "$tmp" "$override"; then
+    warn "could not install Tailscale systemd override: $override"
+  elif ! sudo systemctl daemon-reload; then
+    warn "could not reload systemd after configuring Tailscale"
+  fi
+
+  rm -f "$tmp"
+}
+
+configure_tailscale_operator() {
+  if ! systemctl is-active --quiet tailscaled.service; then
+    warn "Tailscale is not active; could not set its local operator"
+    return 0
+  fi
+
+  log "allowing $USER to control Tailscale without sudo"
+  if ! sudo tailscale set --operator="$USER"; then
+    warn "could not set the Tailscale operator"
+  fi
+}
+
+configure_tailscale_systray() {
+  if [[ "${ARCH_SETUP_TAILSCALE_SYSTRAY:-1}" != "1" ]]; then
+    warn "Tailscale systray enablement disabled"
+    return 0
+  fi
+
+  if ! tailscale configure systray --help >/dev/null 2>&1; then
+    warn "this Tailscale version does not provide the Linux systray"
+    return 0
+  fi
+
+  log "installing Tailscale systray user service"
+  if ! tailscale configure systray --enable-startup=systemd; then
+    warn "could not install the Tailscale systray user service"
+    return 0
+  fi
+
+  if ! systemctl --user daemon-reload; then
+    warn "could not reload user systemd after installing the Tailscale systray"
+    return 0
+  fi
+
+  enable_user_service tailscale-systray.service "Tailscale systray"
+}
+
 install_vpn_unlimited_import_helper() {
   local helper="$HOME/.local/bin/vpn-unlimited-import-ovpn"
   local tmp
@@ -111,7 +171,13 @@ else
 fi
 
 if [[ "${ARCH_SETUP_TAILSCALE_SERVICE:-1}" == "1" ]]; then
+  configure_tailscale_firewall
   enable_system_service tailscaled.service Tailscale
+  if systemctl is-active --quiet tailscaled.service; then
+    sudo systemctl restart tailscaled.service || warn "could not restart Tailscale after configuration"
+  fi
+  configure_tailscale_operator
+  configure_tailscale_systray
 else
   warn "Tailscale service enablement disabled"
 fi
@@ -122,5 +188,5 @@ else
   warn "Syncthing user service enablement disabled"
 fi
 
-warn "Tailscale auth is manual. Run 'sudo tailscale up' after bootstrap."
+warn "Tailscale auth is manual. Use the tray's Sign in action or run 'tailscale up' after bootstrap."
 warn "VPN Unlimited uses native OpenVPN. Generate a manual .ovpn profile, then run 'vpn-unlimited-import-ovpn FILE.ovpn'."

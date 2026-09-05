@@ -28,6 +28,7 @@ rust
 llvm
 syncthing
 tailscale
+tmux
 zed
 
 # Hyprland/ML4W desktop pieces and user apps
@@ -40,6 +41,7 @@ libappindicator
 pipewire
 pipewire-pulse
 webkit2gtk-4.1
+wl-clipboard
 wireplumber
 xdg-desktop-portal
 xdg-desktop-portal-gtk

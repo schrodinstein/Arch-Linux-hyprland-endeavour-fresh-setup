@@ -36,9 +36,10 @@ For an already cloned checkout:
 
 ## What It Does
 
-- Installs base tooling, Hyprland/ML4W prerequisites, Kitty, Fastfetch, Zed, Codex, Rust, Node, NetworkManager OpenVPN support, Syncthing, Tailscale, desktop portals, audio pieces, and native WebKit desktop app dependencies.
+- Installs base tooling, Hyprland/ML4W prerequisites, Kitty, tmux, Fastfetch, Zed, Codex, Rust, Node, NetworkManager OpenVPN support, Syncthing, Tailscale, desktop portals, audio pieces, and native WebKit desktop app dependencies.
 - Installs AUR apps currently tracked here: `rustmon-git` and `plexamp-bin`.
-- Enables `NetworkManager.service`, `tailscaled.service`, and the per-user `syncthing.service` when systemd is available.
+- Enables `NetworkManager.service`, `tailscaled.service`, and the per-user Syncthing and Tailscale tray services when systemd is available.
+- Configures Tailscale for native nftables routing and lets the desktop user manage it without sudo.
 - Installs `vpn-unlimited-import-ovpn` for importing VPN Unlimited manual OpenVPN profiles into NetworkManager.
 - Installs Cargo terminal toys: `cyber-rain`, `rxpipes`, and `tarts` (`tarts donut`).
 - Installs `mhfan/inperiod` as a native standalone periodic table app.
@@ -48,6 +49,7 @@ For an already cloned checkout:
 - Configures new Kitty Bash/Zsh/Fish sessions to use a normal-size random Rustmon Pokemon with `--shiny 0.2` as the Fastfetch logo.
 - Configures Zed with the Codex ACP agent settings.
 - Creates a minimal Codex config without copying auth/session state.
+- Configures tmux with Kitty truecolor, Wayland clipboard integration, and live colors from the current ML4W wallpaper palette.
 
 ## Temporary Sudo
 
@@ -79,6 +81,8 @@ ARCH_SETUP_TEMP_SUDO=0           # do not create temporary NOPASSWD sudo rule
 ARCH_SETUP_WALLHAVEN_TIMER=0     # install Wallhaven support but do not enable the 20-minute user timer
 ARCH_SETUP_NETWORKMANAGER_SERVICE=0 # install NetworkManager/OpenVPN but do not enable NetworkManager.service
 ARCH_SETUP_TAILSCALE_SERVICE=0   # install Tailscale but do not enable tailscaled.service
+ARCH_SETUP_TAILSCALE_SYSTRAY=0   # do not install or enable the Tailscale tray
+ARCH_SETUP_TAILSCALE_FIREWALL_MODE=auto # use auto or iptables instead of nftables
 ARCH_SETUP_SYNCTHING_SERVICE=0   # install Syncthing but do not enable the user service
 ARCH_SETUP_INPERIOD_REF=v0.1.6   # optional git ref/tag/branch for mhfan/inperiod
 ARCH_SETUP_DIR=$HOME/.local/src/arch-setup
@@ -94,11 +98,13 @@ codex login
 zeditor
 ```
 
-Tailscale needs account-specific login after install:
+Tailscale needs account-specific login after install. Use **Sign in** from its Waybar tray icon, or run:
 
 ```bash
-sudo tailscale up
+tailscale up
 ```
+
+The daemon runs at boot even when no user is logged in. The local browser GUI is available at [http://100.100.100.100](http://100.100.100.100); the tray provides connection state, account switching, and exit-node selection.
 
 Syncthing starts as a user service and serves its local web UI at:
 
@@ -125,8 +131,26 @@ Imported profiles are visible in NetworkManager-compatible desktop network setti
 
 ```text
 SUPER+SHIFT+P        Open Inperiod periodic table
+SUPER+SHIFT+ENTER    Open or reattach the persistent tmux main workspace
 SUPER+CTRL+SHIFT+W   Fetch a fresh Wallhaven wallpaper
 ```
+
+## tmux
+
+tmux keeps its standard `CTRL+B` prefix. Splits inherit the active pane's directory, mouse support is enabled, and copied text goes directly to the Wayland clipboard. The status line is regenerated from ML4W's current Material palette whenever the wallpaper colors change. Rustmon/Fastfetch appears once per tmux session instead of filling every new pane.
+
+```text
+CTRL+B |             Split right
+CTRL+B -             Split down
+CTRL+B h/j/k/l       Move between panes
+CTRL+B H/J/K/L       Resize panes
+CTRL+B [             Enter vi copy mode; v selects and y copies
+CTRL+B P             Paste from the Wayland clipboard
+CTRL+B T             Open a temporary shell popup
+CTRL+B r             Reload the configuration
+```
+
+The configuration is self-contained under `~/.config/tmux`; it does not require TPM or third-party plugins.
 
 ## Terminal Toys
 

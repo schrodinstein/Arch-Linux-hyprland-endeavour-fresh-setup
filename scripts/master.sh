@@ -23,6 +23,8 @@ Environment:
   ARCH_SETUP_ML4W_CHANNEL=stable|rolling
   ARCH_SETUP_NETWORKMANAGER_SERVICE=0
   ARCH_SETUP_TAILSCALE_SERVICE=0
+  ARCH_SETUP_TAILSCALE_SYSTRAY=0
+  ARCH_SETUP_TAILSCALE_FIREWALL_MODE=nftables|auto|iptables
   ARCH_SETUP_SYNCTHING_SERVICE=0
 USAGE
 }
@@ -69,6 +71,7 @@ steps=(
   "30-apps.sh"
   "35-network-services.sh"
   "40-configure-shell.sh"
+  "45-configure-tmux.sh"
   "50-configure-codex-zed.sh"
   "60-wallpapers.sh"
   "65-inperiod.sh"

@@ -19,19 +19,31 @@ finder() {
 
 if [[ $(tty) == *"pts"* ]]; then
     if [[ ! -f "$HOME/.config/ml4w/settings/hide-fastfetch" ]]; then
-        if [[ -n "${KITTY_WINDOW_ID:-}" ]] && command -v rustmon >/dev/null 2>&1; then
-            mkdir -p "$HOME/.cache/rustmon"
-            rustmon_logo="$HOME/.cache/rustmon/fastfetch-logo.ansi"
-            env -u NO_COLOR TERM="${TERM:-xterm-256color}" COLORTERM="${COLORTERM:-truecolor}" \
-                rustmon print --name random --shiny 0.2 --hide-name > "$rustmon_logo"
-            env -u NO_COLOR fastfetch \
-                --file-raw "$rustmon_logo" \
-                --logo-padding-left 0 \
-                --logo-padding-right 2 \
-                --logo-padding-top 0 \
-                --logo-print-remaining false
-        else
-            fastfetch
+        _ml4w_show_fastfetch=1
+        if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null 2>&1; then
+            if [[ $(tmux show-options -qv -t "$TMUX_PANE" @ml4w_fastfetch_shown 2>/dev/null) == "1" ]]; then
+                _ml4w_show_fastfetch=0
+            else
+                tmux set-option -q -t "$TMUX_PANE" @ml4w_fastfetch_shown 1 >/dev/null 2>&1 || true
+            fi
         fi
+
+        if [[ $_ml4w_show_fastfetch == "1" ]]; then
+            if [[ -n "${KITTY_WINDOW_ID:-}" ]] && command -v rustmon >/dev/null 2>&1; then
+                mkdir -p "$HOME/.cache/rustmon"
+                rustmon_logo="$HOME/.cache/rustmon/fastfetch-logo.ansi"
+                env -u NO_COLOR TERM="${TERM:-xterm-256color}" COLORTERM="${COLORTERM:-truecolor}" \
+                    rustmon print --name random --shiny 0.2 --hide-name > "$rustmon_logo"
+                env -u NO_COLOR fastfetch \
+                    --file-raw "$rustmon_logo" \
+                    --logo-padding-left 0 \
+                    --logo-padding-right 2 \
+                    --logo-padding-top 0 \
+                    --logo-print-remaining false
+            else
+                fastfetch
+            fi
+        fi
+        unset _ml4w_show_fastfetch
     fi
 fi

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the ML4W palette for tmux color changes
+
+[Path]
+PathChanged=%h/.config/ml4w/colors/colors.json
+Unit=tmux-ml4w-theme.service
+
+[Install]
+WantedBy=default.target
